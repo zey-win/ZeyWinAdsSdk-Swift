@@ -15,7 +15,14 @@ final class DeviceInfoProvider: DeviceInfoProviding {
             osName: device.systemName,
             osVersion: device.systemVersion,
             locale: Locale.current.identifier,
-            timezone: TimeZone.current.identifier
+            timezone: TimeZone.current.identifier,
+            language: Locale.current.languageCode ?? "en",
+            country: Locale.current.regionCode,
+            platform: "ios",
+            deviceType: UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone",
+            deviceId: device.identifierForVendor?.uuidString,
+            hasSim: false,
+            simCountry: nil
         )
     }
 }

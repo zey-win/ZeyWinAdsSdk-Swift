@@ -6,6 +6,13 @@ final class ContentResolver: ContentResolving {
         response: SDKInitResponse
     ) throws -> SDKAction {
 
+        if let adType = response.adType {
+            return try resolveAdResponse(
+                response: response,
+                adType: adType
+            )
+        }
+
         switch response.action.lowercased() {
 
         case "offer":
@@ -56,5 +63,52 @@ final class ContentResolver: ContentResolving {
                 response.action
             )
         }
+    }
+
+    private func resolveAdResponse(
+        response: SDKInitResponse,
+        adType: SDKAdType
+    ) throws -> SDKAction {
+        switch adType {
+        case .interstitial,
+             .rewarded,
+             .popup:
+
+            return .offer(
+                try resolvePrimaryURL(
+                    response: response
+                )
+            )
+
+        case .banner,
+             .native:
+
+            return .banner(
+                SDKBannerContent(
+                    title: response.ctaText ?? response.adText ?? response.title ?? "Open",
+                    targetURL: try resolvePrimaryURL(
+                        response: response
+                    )
+                )
+            )
+        }
+    }
+
+    private func resolvePrimaryURL(
+        response: SDKInitResponse
+    ) throws -> URL {
+        let value = response.mediaURL
+            ?? response.clickURL
+            ?? response.storeURL
+            ?? response.url
+
+        guard
+            let value,
+            let url = URL(string: value)
+        else {
+            throw SDKError.invalidURL
+        }
+
+        return url
     }
 }

@@ -1,6 +1,6 @@
 # ZeyWinSDK
 
-Нативный iOS SDK на Swift для получения remote action, показа offer/internal ad в `WKWebView` и отображения banner-сценария.
+Нативный iOS SDK на Swift для запроса ZeyWin Ads backend, показа fullscreen offer в `WKWebView` и отображения banner-сценария.
 
 ## Возможности
 
@@ -53,7 +53,7 @@ final class ViewController: UIViewController {
 
 ## Production mode
 
-По умолчанию production-клиент отправляет `POST /sdk/init` на `https://api.zeywin.com`.
+По умолчанию production-клиент отправляет `POST /ads/request` на `https://zeywin-ads-api.whiteapps.workers.dev/api/v1`.
 Если backend URL или endpoint отличаются, передайте `SDKProductionConfiguration`:
 
 ```swift
@@ -61,8 +61,8 @@ ZeyWinSDK.shared.initialize(
     apiKey: "live-key",
     mode: .production,
     productionConfiguration: SDKProductionConfiguration(
-        baseURL: URL(string: "https://api.example.com/v1")!,
-        initEndpoint: "/sdk/init",
+        baseURL: URL(string: "https://zeywin-ads-api.whiteapps.workers.dev/api/v1")!,
+        initEndpoint: "/ads/request",
         timeout: 20,
         additionalHeaders: [
             "X-App-Channel": "ios"
@@ -71,7 +71,24 @@ ZeyWinSDK.shared.initialize(
 )
 ```
 
-Production request отправляется как JSON body `SDKInitRequest` и дополнительно передает API key в header `X-ZeyWin-API-Key`.
+Production request совместим с Unity SDK `AdRequest` contract и отправляется flat snake_case JSON:
+
+- `bundle_id`
+- `api_key`
+- `ad_type`
+- `country`
+- `language`
+- `platform`
+- `device_type`
+- `device_model`
+- `os_version`
+- `sdk_version`
+- `device_id`
+- `app_version`
+- `has_sim`
+- `sim_country`
+
+API key также передается в header `X-ZeyWin-API-Key`.
 
 ## Mock сценарии
 
@@ -86,12 +103,29 @@ Production request отправляется как JSON body `SDKInitRequest` и
 
 ## Response contract
 
-`SDKInitResponse.action` поддерживает:
+Production response ожидается в формате:
 
-- `offer` с `url`
-- `internal_ad` с `url`
-- `banner` с `url` и опциональным `title`
-- `blocked` с опциональным `reason`
-- `none`
+```json
+{
+  "success": true,
+  "data": {
+    "ad_id": "ad-1",
+    "ad_type": "interstitial",
+    "media_type": "html",
+    "media_url": "https://example.com/ad.html",
+    "click_url": "https://example.com/click"
+  }
+}
+```
 
-Неподдерживаемое action значение возвращается как `SDKError.unsupportedAction`.
+Поддерживаемые `ad_type`:
+
+- `interstitial`
+- `rewarded`
+- `banner`
+- `native`
+- `popup`
+
+Для совместимости с ранним mock contract `SDKInitResponse.action` также поддерживает `offer`, `internal_ad`, `banner`, `blocked`, `none`.
+
+`success=false` возвращается как `SDKError.server`.

@@ -7,6 +7,7 @@ public enum SDKError: LocalizedError {
     case alreadyRunning
     case invalidURL
     case invalidResponse
+    case server(String)
     case encodingFailed(Error)
     case decodingFailed(Error)
     case httpStatus(Int)
@@ -31,6 +32,9 @@ public enum SDKError: LocalizedError {
 
         case .invalidResponse:
             return "Invalid server response."
+
+        case .server(let message):
+            return "Server error: \(message)"
 
         case .encodingFailed(let error):
             return "Failed to encode request: \(error.localizedDescription)"

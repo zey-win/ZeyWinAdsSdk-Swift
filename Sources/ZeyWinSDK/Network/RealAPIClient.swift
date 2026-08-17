@@ -90,11 +90,27 @@ final class RealAPIClient: APIClientProtocol {
         }
 
         do {
-            return try jsonDecoder.decode(
-                SDKInitResponse.self,
+            let apiResponse = try jsonDecoder.decode(
+                SDKAPIResponse<SDKInitResponse>.self,
                 from: data
             )
+
+            guard apiResponse.success else {
+                throw SDKError.server(
+                    apiResponse.error ?? "Unknown error"
+                )
+            }
+
+            guard let sdkResponse = apiResponse.data else {
+                throw SDKError.invalidResponse
+            }
+
+            return sdkResponse
         } catch {
+            if let sdkError = error as? SDKError {
+                throw sdkError
+            }
+
             throw SDKError.decodingFailed(
                 error
             )

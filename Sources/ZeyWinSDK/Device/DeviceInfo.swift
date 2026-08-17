@@ -9,6 +9,13 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
     public let osVersion: String
     public let locale: String
     public let timezone: String
+    public let language: String
+    public let country: String?
+    public let platform: String
+    public let deviceType: String
+    public let deviceId: String?
+    public let hasSim: Bool
+    public let simCountry: String?
 
     public init(
         bundleId: String,
@@ -17,7 +24,14 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
         osName: String,
         osVersion: String,
         locale: String,
-        timezone: String
+        timezone: String,
+        language: String = Locale.current.languageCode ?? "en",
+        country: String? = Locale.current.regionCode,
+        platform: String = "ios",
+        deviceType: String = "phone",
+        deviceId: String? = nil,
+        hasSim: Bool = false,
+        simCountry: String? = nil
     ) {
         self.bundleId = bundleId
         self.appVersion = appVersion
@@ -26,5 +40,12 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
         self.osVersion = osVersion
         self.locale = locale
         self.timezone = timezone
+        self.language = language
+        self.country = country
+        self.platform = platform
+        self.deviceType = deviceType
+        self.deviceId = deviceId
+        self.hasSim = hasSim
+        self.simCountry = simCountry
     }
 }

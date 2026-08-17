@@ -9,7 +9,7 @@ final class RealAPIClientTests: XCTestCase {
     }
 
     func testFetchInitialConfigurationPostsJSONAndDecodesResponse() async throws {
-        let expectedURL = URL(string: "https://api.example.com/v1/sdk/init")!
+        let expectedURL = URL(string: "https://api.example.com/v1/ads/request")!
 
         MockURLProtocol.requestHandler = { request in
             XCTAssertEqual(
@@ -43,12 +43,24 @@ final class RealAPIClientTests: XCTestCase {
                 decoded.device.bundleId,
                 "com.example.app"
             )
+            XCTAssertEqual(
+                decoded.adType,
+                .interstitial
+            )
 
-            let data = try JSONEncoder().encode(
-                SDKInitResponse(
-                    action: "offer",
-                    url: "https://example.com"
-                )
+            let data = Data(
+                """
+                {
+                  "success": true,
+                  "data": {
+                    "ad_id": "ad-1",
+                    "ad_type": "interstitial",
+                    "media_type": "html",
+                    "media_url": "https://example.com/ad.html",
+                    "click_url": "https://example.com/click"
+                  }
+                }
+                """.utf8
             )
             let response = HTTPURLResponse(
                 url: expectedURL,
@@ -66,7 +78,7 @@ final class RealAPIClientTests: XCTestCase {
         let client = RealAPIClient(
             configuration: SDKProductionConfiguration(
                 baseURL: URL(string: "https://api.example.com/v1")!,
-                initEndpoint: "/sdk/init",
+                initEndpoint: "/ads/request",
                 additionalHeaders: [
                     "X-Custom": "custom-value"
                 ]
@@ -80,12 +92,60 @@ final class RealAPIClientTests: XCTestCase {
 
         XCTAssertEqual(
             response.action,
-            "offer"
+            "interstitial"
         )
         XCTAssertEqual(
-            response.url,
-            "https://example.com"
+            response.mediaURL,
+            "https://example.com/ad.html"
         )
+        XCTAssertEqual(
+            response.clickURL,
+            "https://example.com/click"
+        )
+    }
+
+    func testFetchInitialConfigurationThrowsServerError() async throws {
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "success": false,
+                      "error": "app inactive"
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        do {
+            _ = try await client.fetchInitialConfiguration(
+                request: makeRequest()
+            )
+            XCTFail("Expected request to throw")
+        } catch SDKError.server(let message) {
+            XCTAssertEqual(
+                message,
+                "app inactive"
+            )
+        } catch {
+            XCTFail("Unexpected error: \(error)")
+        }
     }
 
     func testFetchInitialConfigurationThrowsHTTPStatus() async throws {
