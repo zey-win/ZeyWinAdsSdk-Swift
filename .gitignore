@@ -1,0 +1,25 @@
+.DS_Store
+
+# Swift Package Manager
+.build/
+.swiftpm/
+Package.resolved
+
+# Xcode
+DerivedData/
+*.xcworkspace/xcuserdata/
+*.xcodeproj/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+
+# macOS and editor state
+*.swp
+*.swo
+.vscode/
+.idea/
+
+# Archives and build artifacts
+*.xcarchive
+*.ipa
+*.dSYM.zip
+*.dSYM
