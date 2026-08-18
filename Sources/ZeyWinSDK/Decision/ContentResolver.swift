@@ -23,6 +23,11 @@ final class ContentResolver: ContentResolving {
                 throw SDKError.invalidURL
             }
 
+            registerTracking(
+                from: response,
+                for: url
+            )
+
             return .offer(url)
 
         case "internal_ad":
@@ -32,6 +37,11 @@ final class ContentResolver: ContentResolving {
             else {
                 throw SDKError.invalidURL
             }
+
+            registerTracking(
+                from: response,
+                for: url
+            )
 
             return .internalAd(url)
 
@@ -46,7 +56,13 @@ final class ContentResolver: ContentResolving {
             return .banner(
                 SDKBannerContent(
                     title: response.title ?? "Open",
-                    targetURL: url
+                    body: response.adBody ?? response.adText,
+                    mediaURL: makeURL(response.mediaURL),
+                    targetURL: url,
+                    ctaText: response.ctaText ?? "Open",
+                    tracking: makeTracking(
+                        from: response
+                    )
                 )
             )
 
@@ -74,11 +90,16 @@ final class ContentResolver: ContentResolving {
              .rewarded,
              .popup:
 
-            return .offer(
-                try resolvePrimaryURL(
-                    response: response
-                )
+            let url = try resolvePrimaryURL(
+                response: response
             )
+
+            registerTracking(
+                from: response,
+                for: url
+            )
+
+            return .offer(url)
 
         case .banner,
              .native:
@@ -86,8 +107,14 @@ final class ContentResolver: ContentResolving {
             return .banner(
                 SDKBannerContent(
                     title: response.ctaText ?? response.adText ?? response.title ?? "Open",
-                    targetURL: try resolvePrimaryURL(
+                    body: response.adBody ?? response.adText,
+                    mediaURL: makeURL(response.mediaURL),
+                    targetURL: try resolveDestinationURL(
                         response: response
+                    ),
+                    ctaText: response.ctaText ?? "Open",
+                    tracking: makeTracking(
+                        from: response
                     )
                 )
             )
@@ -110,5 +137,62 @@ final class ContentResolver: ContentResolving {
         }
 
         return url
+    }
+
+    private func resolveDestinationURL(
+        response: SDKInitResponse
+    ) throws -> URL {
+        let value = response.clickURL
+            ?? response.storeURL
+            ?? response.url
+            ?? response.mediaURL
+
+        guard
+            let value,
+            let url = URL(string: value)
+        else {
+            throw SDKError.invalidURL
+        }
+
+        return url
+    }
+
+    private func makeTracking(
+        from response: SDKInitResponse
+    ) -> SDKAdTracking? {
+        let tracking = SDKAdTracking(
+            adId: response.adId,
+            adType: response.adType?.rawValue ?? response.action,
+            impressionURL: makeURL(response.impressionURL),
+            clickURL: makeURL(response.clickTrackingURL),
+            completeURL: makeURL(response.completeURL),
+            rewardURL: makeURL(response.rewardURL)
+        )
+
+        return tracking.isEmpty ? nil : tracking
+    }
+
+    private func registerTracking(
+        from response: SDKInitResponse,
+        for url: URL
+    ) {
+        guard let tracking = makeTracking(from: response) else {
+            return
+        }
+
+        SDKTrackingRegistry.shared.register(
+            tracking: tracking,
+            for: url
+        )
+    }
+
+    private func makeURL(
+        _ value: String?
+    ) -> URL? {
+        guard let value else {
+            return nil
+        }
+
+        return URL(string: value)
     }
 }

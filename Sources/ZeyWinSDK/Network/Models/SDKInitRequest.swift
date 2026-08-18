@@ -2,7 +2,7 @@ import Foundation
 
 public struct SDKInitRequest: Codable, Sendable {
 
-    public static let sdkVersion = "1.0.0"
+    public static let sdkVersion = "3.9.55-swift"
 
     public let apiKey: String
     public let device: DeviceInfo
@@ -33,6 +33,10 @@ public struct SDKInitRequest: Codable, Sendable {
         case appVersion = "app_version"
         case hasSim = "has_sim"
         case simCountry = "sim_country"
+        case isSimulator = "is_simulator"
+        case isJailbroken = "is_jailbroken"
+        case isSandboxReceipt = "is_sandbox_receipt"
+        case suspiciousApps = "suspicious_apps"
     }
 
     public init(from decoder: Decoder) throws {
@@ -63,7 +67,11 @@ public struct SDKInitRequest: Codable, Sendable {
             deviceType: try container.decodeIfPresent(String.self, forKey: .deviceType) ?? "phone",
             deviceId: try container.decodeIfPresent(String.self, forKey: .deviceId),
             hasSim: try container.decodeIfPresent(Bool.self, forKey: .hasSim) ?? false,
-            simCountry: try container.decodeIfPresent(String.self, forKey: .simCountry)
+            simCountry: try container.decodeIfPresent(String.self, forKey: .simCountry),
+            isSimulator: try container.decodeIfPresent(Bool.self, forKey: .isSimulator) ?? false,
+            isJailbroken: try container.decodeIfPresent(Bool.self, forKey: .isJailbroken) ?? false,
+            isSandboxReceipt: try container.decodeIfPresent(Bool.self, forKey: .isSandboxReceipt) ?? false,
+            suspiciousApps: try container.decodeIfPresent([String].self, forKey: .suspiciousApps) ?? []
         )
 
         self.init(
@@ -133,6 +141,22 @@ public struct SDKInitRequest: Codable, Sendable {
         try container.encodeIfPresent(
             device.simCountry,
             forKey: .simCountry
+        )
+        try container.encode(
+            device.isSimulator,
+            forKey: .isSimulator
+        )
+        try container.encode(
+            device.isJailbroken,
+            forKey: .isJailbroken
+        )
+        try container.encode(
+            device.isSandboxReceipt,
+            forKey: .isSandboxReceipt
+        )
+        try container.encode(
+            device.suspiciousApps,
+            forKey: .suspiciousApps
         )
     }
 }

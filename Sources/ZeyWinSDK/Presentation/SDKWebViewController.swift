@@ -5,13 +5,19 @@ import WebKit
 final class SDKWebViewController: UIViewController {
 
     private let url: URL
+    private let tracking: SDKAdTracking?
+    private var didSendClickTracking = false
     private let webView = WKWebView(
         frame: .zero,
         configuration: WKWebViewConfiguration()
     )
 
-    init(url: URL) {
+    init(
+        url: URL,
+        tracking: SDKAdTracking?
+    ) {
         self.url = url
+        self.tracking = tracking
         super.init(
             nibName: nil,
             bundle: nil
@@ -58,6 +64,11 @@ final class SDKWebViewController: UIViewController {
         webView.load(
             URLRequest(url: url)
         )
+
+        SDKTrackingClient.shared.fire(
+            tracking,
+            event: "impression"
+        )
     }
 
     @objc
@@ -67,6 +78,25 @@ final class SDKWebViewController: UIViewController {
 }
 
 extension SDKWebViewController: WKNavigationDelegate {
+
+    func webView(
+        _ webView: WKWebView,
+        decidePolicyFor navigationAction: WKNavigationAction,
+        decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
+    ) {
+        if
+            navigationAction.navigationType == .linkActivated,
+            !didSendClickTracking
+        {
+            didSendClickTracking = true
+            SDKTrackingClient.shared.fire(
+                tracking,
+                event: "click"
+            )
+        }
+
+        decisionHandler(.allow)
+    }
 
     func webView(
         _ webView: WKWebView,

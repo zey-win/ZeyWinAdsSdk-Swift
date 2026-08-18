@@ -16,6 +16,10 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
     public let deviceId: String?
     public let hasSim: Bool
     public let simCountry: String?
+    public let isSimulator: Bool
+    public let isJailbroken: Bool
+    public let isSandboxReceipt: Bool
+    public let suspiciousApps: [String]
 
     public init(
         bundleId: String,
@@ -31,7 +35,11 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
         deviceType: String = "phone",
         deviceId: String? = nil,
         hasSim: Bool = false,
-        simCountry: String? = nil
+        simCountry: String? = nil,
+        isSimulator: Bool = false,
+        isJailbroken: Bool = false,
+        isSandboxReceipt: Bool = false,
+        suspiciousApps: [String] = []
     ) {
         self.bundleId = bundleId
         self.appVersion = appVersion
@@ -47,5 +55,9 @@ public struct DeviceInfo: Codable, Equatable, Sendable {
         self.deviceId = deviceId
         self.hasSim = hasSim
         self.simCountry = simCountry
+        self.isSimulator = isSimulator
+        self.isJailbroken = isJailbroken
+        self.isSandboxReceipt = isSandboxReceipt
+        self.suspiciousApps = suspiciousApps
     }
 }

@@ -38,7 +38,10 @@ final class ContentPresenter: ContentPresenting {
         from viewController: UIViewController
     ) {
         let webViewController = SDKWebViewController(
-            url: url
+            url: url,
+            tracking: SDKTrackingRegistry.shared.tracking(
+                for: url
+            )
         )
 
         let navigationController = UINavigationController(
@@ -57,6 +60,11 @@ final class ContentPresenter: ContentPresenting {
         content: SDKBannerContent,
         from viewController: UIViewController
     ) {
+        SDKTrackingClient.shared.fire(
+            content.tracking,
+            event: "impression"
+        )
+
         let banner = SDKBannerView(
             content: content
         )

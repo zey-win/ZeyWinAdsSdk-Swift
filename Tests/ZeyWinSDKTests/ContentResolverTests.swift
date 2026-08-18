@@ -111,7 +111,44 @@ final class ContentResolverTests: XCTestCase {
             .banner(
                 SDKBannerContent(
                     title: "Install",
-                    targetURL: URL(string: "https://example.com/click")!
+                    targetURL: URL(string: "https://example.com/click")!,
+                    ctaText: "Install"
+                )
+            )
+        )
+    }
+
+    func testBannerResponsePreservesMediaAndTracking() throws {
+        let response = SDKInitResponse(
+            action: "banner",
+            adType: .banner,
+            mediaURL: "https://example.com/image.png",
+            clickURL: "https://example.com/click",
+            impressionURL: "https://example.com/impression",
+            clickTrackingURL: "https://example.com/click-track",
+            adText: "Title",
+            adBody: "Body",
+            ctaText: "Install"
+        )
+
+        let action = try resolver.resolve(
+            response: response
+        )
+
+        XCTAssertEqual(
+            action,
+            .banner(
+                SDKBannerContent(
+                    title: "Install",
+                    body: "Body",
+                    mediaURL: URL(string: "https://example.com/image.png")!,
+                    targetURL: URL(string: "https://example.com/click")!,
+                    ctaText: "Install",
+                    tracking: SDKAdTracking(
+                        adType: "banner",
+                        impressionURL: URL(string: "https://example.com/impression")!,
+                        clickURL: URL(string: "https://example.com/click-track")!
+                    )
                 )
             )
         )

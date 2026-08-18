@@ -8,6 +8,15 @@ final class MockAPIClient: APIClientProtocol {
         self.scenario = scenario
     }
 
+    func reportDevice(
+        request: SDKDeviceReportRequest
+    ) async throws -> SDKDeviceReportResponse {
+        SDKDeviceReportResponse(
+            sdkStatus: "active",
+            blockReason: "mock"
+        )
+    }
+
     func fetchInitialConfiguration(
         request: SDKInitRequest
     ) async throws -> SDKInitResponse {
@@ -53,4 +62,8 @@ final class MockAPIClient: APIClientProtocol {
             )
         }
     }
+
+    func trackEvent(
+        request: SDKEventRequest
+    ) async {}
 }

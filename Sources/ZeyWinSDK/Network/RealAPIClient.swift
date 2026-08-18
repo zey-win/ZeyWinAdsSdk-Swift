@@ -29,12 +29,60 @@ final class RealAPIClient: APIClientProtocol {
         }
     }
 
+    func reportDevice(
+        request: SDKDeviceReportRequest
+    ) async throws -> SDKDeviceReportResponse {
+
+        try await postAPIResponse(
+            path: "/device/report",
+            body: request,
+            apiKey: nil
+        )
+    }
+
     func fetchInitialConfiguration(
         request: SDKInitRequest
     ) async throws -> SDKInitResponse {
 
-        let url = try makeInitURL()
-        var urlRequest = URLRequest(url: url)
+        try await postAPIResponse(
+            path: configuration.initEndpoint,
+            body: request,
+            apiKey: request.apiKey
+        )
+    }
+
+    func trackEvent(
+        request: SDKEventRequest
+    ) async {
+        do {
+            let _: SDKEmptyResponse = try await postAPIResponse(
+                path: "/events",
+                body: request,
+                apiKey: request.apiKey
+            )
+
+            SDKLogger.log(
+                "Event tracked: \(request.eventType)"
+            )
+        } catch {
+            SDKLogger.log(
+                "Event tracking failed: \(request.eventType) \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func postAPIResponse<Body: Encodable, Response: Decodable>(
+        path: String,
+        body: Body,
+        apiKey: String?
+    ) async throws -> Response {
+
+        let url = try makeURL(
+            path: path
+        )
+        var urlRequest = URLRequest(
+            url: url
+        )
         urlRequest.httpMethod = "POST"
         urlRequest.setValue(
             "application/json",
@@ -44,10 +92,13 @@ final class RealAPIClient: APIClientProtocol {
             "application/json",
             forHTTPHeaderField: "Accept"
         )
-        urlRequest.setValue(
-            request.apiKey,
-            forHTTPHeaderField: "X-ZeyWin-API-Key"
-        )
+
+        if let apiKey {
+            urlRequest.setValue(
+                apiKey,
+                forHTTPHeaderField: "X-ZeyWin-API-Key"
+            )
+        }
 
         configuration.additionalHeaders.forEach { key, value in
             urlRequest.setValue(
@@ -58,7 +109,7 @@ final class RealAPIClient: APIClientProtocol {
 
         do {
             urlRequest.httpBody = try jsonEncoder.encode(
-                request
+                body
             )
         } catch {
             throw SDKError.encodingFailed(
@@ -91,7 +142,7 @@ final class RealAPIClient: APIClientProtocol {
 
         do {
             let apiResponse = try jsonDecoder.decode(
-                SDKAPIResponse<SDKInitResponse>.self,
+                SDKAPIResponse<Response>.self,
                 from: data
             )
 
@@ -101,11 +152,15 @@ final class RealAPIClient: APIClientProtocol {
                 )
             }
 
-            guard let sdkResponse = apiResponse.data else {
-                throw SDKError.invalidResponse
+            if let sdkResponse = apiResponse.data {
+                return sdkResponse
             }
 
-            return sdkResponse
+            if Response.self == SDKEmptyResponse.self {
+                return SDKEmptyResponse() as! Response
+            }
+
+            throw SDKError.invalidResponse
         } catch {
             if let sdkError = error as? SDKError {
                 throw sdkError
@@ -117,7 +172,9 @@ final class RealAPIClient: APIClientProtocol {
         }
     }
 
-    private func makeInitURL() throws -> URL {
+    private func makeURL(
+        path: String
+    ) throws -> URL {
         guard
             var components = URLComponents(
                 url: configuration.baseURL,
@@ -131,7 +188,7 @@ final class RealAPIClient: APIClientProtocol {
 
         let basePath = components.path
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
-        let endpointPath = configuration.initEndpoint
+        let endpointPath = path
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
 
         let path = [
@@ -149,4 +206,8 @@ final class RealAPIClient: APIClientProtocol {
 
         return url
     }
+}
+
+private struct SDKEmptyResponse: Decodable {
+    init() {}
 }

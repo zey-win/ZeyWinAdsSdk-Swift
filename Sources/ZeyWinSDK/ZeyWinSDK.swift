@@ -113,6 +113,46 @@ public final class ZeyWinSDK {
 
             let deviceInfo = deviceInfoProvider.collect()
 
+            SDKTrackingClient.shared.configure(
+                apiClient: apiClient,
+                apiKey: configuration.apiKey,
+                device: deviceInfo
+            )
+
+            let localReport = makeDeviceReport(
+                deviceInfo: deviceInfo
+            )
+
+            do {
+                let reportResponse = try await apiClient.reportDevice(
+                    request: localReport
+                )
+
+                SDKLogger.log(
+                    "Device report verdict: \(reportResponse.sdkStatus) \(reportResponse.blockReason ?? "none")"
+                )
+
+                if reportResponse.sdkStatus == "blocked" {
+                    state = .ready
+
+                    return .success(
+                        .blocked(reason: reportResponse.blockReason)
+                    )
+                }
+            } catch {
+                SDKLogger.log(
+                    "Device report failed: \(error.localizedDescription)"
+                )
+
+                if localReport.sdkStatus == "blocked" {
+                    state = .ready
+
+                    return .success(
+                        .blocked(reason: localReport.blockReason)
+                    )
+                }
+            }
+
             let request = SDKInitRequest(
                 apiKey: configuration.apiKey,
                 device: deviceInfo
@@ -134,8 +174,21 @@ public final class ZeyWinSDK {
             )
 
             switch action {
-            case .none,
-                 .blocked:
+            case .none:
+                SDKLogger.log(
+                    "Backend verdict: none"
+                )
+
+                state = .ready
+
+                return .success(
+                    action
+                )
+
+            case .blocked(let reason):
+                SDKLogger.log(
+                    "Backend verdict: blocked(\(reason ?? "unknown"))"
+                )
 
                 state = .ready
 
@@ -162,6 +215,9 @@ public final class ZeyWinSDK {
             }
 
         } catch let error as SDKError {
+            SDKLogger.log(
+                "SDK failed: \(error.localizedDescription)"
+            )
 
             state = .failed(
                 error.localizedDescription
@@ -175,6 +231,10 @@ public final class ZeyWinSDK {
 
             let sdkError = SDKError.unknown(
                 error
+            )
+
+            SDKLogger.log(
+                "SDK failed: \(sdkError.localizedDescription)"
             )
 
             state = .failed(
@@ -194,6 +254,30 @@ public final class ZeyWinSDK {
 
         SDKLogger.log(
             "SDK reset"
+        )
+    }
+
+    private func makeDeviceReport(
+        deviceInfo: DeviceInfo
+    ) -> SDKDeviceReportRequest {
+        let reason: String
+
+        if deviceInfo.isJailbroken {
+            reason = "root_access"
+        } else if !deviceInfo.suspiciousApps.isEmpty {
+            reason = "suspicious_apps"
+        } else if !deviceInfo.hasSim {
+            reason = "no_sim"
+        } else if deviceInfo.isSimulator {
+            reason = "review_emulator"
+        } else {
+            reason = "none"
+        }
+
+        return SDKDeviceReportRequest(
+            device: deviceInfo,
+            sdkStatus: reason == "none" ? "active" : "blocked",
+            blockReason: reason
         )
     }
 }

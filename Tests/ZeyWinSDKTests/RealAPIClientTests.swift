@@ -47,6 +47,25 @@ final class RealAPIClientTests: XCTestCase {
                 decoded.adType,
                 .interstitial
             )
+            XCTAssertTrue(
+                decoded.device.hasSim
+            )
+            XCTAssertEqual(
+                decoded.device.simCountry,
+                "US"
+            )
+            XCTAssertTrue(
+                decoded.device.isSimulator
+            )
+            XCTAssertTrue(
+                decoded.device.isSandboxReceipt
+            )
+            XCTAssertEqual(
+                decoded.device.suspiciousApps,
+                [
+                    "cydia"
+                ]
+            )
 
             let data = Data(
                 """
@@ -239,6 +258,169 @@ final class RealAPIClientTests: XCTestCase {
         }
     }
 
+    func testReportDevicePostsUnityCompatiblePayload() async throws {
+        let expectedURL = URL(string: "https://api.example.com/v1/device/report")!
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(
+                request.url,
+                expectedURL
+            )
+            XCTAssertEqual(
+                request.httpMethod,
+                "POST"
+            )
+
+            let body = try XCTUnwrap(request.httpBodyStream?.readAllData())
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any]
+            )
+
+            XCTAssertEqual(
+                json["bundle_id"] as? String,
+                "com.example.app"
+            )
+            XCTAssertEqual(
+                json["has_sim"] as? Bool,
+                true
+            )
+            XCTAssertEqual(
+                json["sim_country"] as? String,
+                "US"
+            )
+            XCTAssertEqual(
+                json["sdk_status"] as? String,
+                "active"
+            )
+            XCTAssertEqual(
+                json["block_reason"] as? String,
+                "none"
+            )
+            XCTAssertEqual(
+                json["detected_packages"] as? String,
+                "cydia,simulator"
+            )
+
+            let response = HTTPURLResponse(
+                url: expectedURL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "sdk_status": "blocked",
+                        "block_reason": "review_emulator"
+                      }
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com/v1")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        let response = try await client.reportDevice(
+            request: SDKDeviceReportRequest(
+                device: makeRequest().device,
+                sdkStatus: "active",
+                blockReason: "none"
+            )
+        )
+
+        XCTAssertEqual(
+            response.sdkStatus,
+            "blocked"
+        )
+        XCTAssertEqual(
+            response.blockReason,
+            "review_emulator"
+        )
+    }
+
+    func testTrackEventAcceptsSuccessWithoutData() async throws {
+        let expectedURL = URL(string: "https://api.example.com/v1/events")!
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(
+                request.url,
+                expectedURL
+            )
+            XCTAssertEqual(
+                request.httpMethod,
+                "POST"
+            )
+
+            let body = try XCTUnwrap(request.httpBodyStream?.readAllData())
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any]
+            )
+
+            XCTAssertEqual(
+                json["api_key"] as? String,
+                "test-key"
+            )
+            XCTAssertEqual(
+                json["bundle_id"] as? String,
+                "com.example.app"
+            )
+            XCTAssertEqual(
+                json["ad_id"] as? String,
+                "ad-1"
+            )
+            XCTAssertEqual(
+                json["event_type"] as? String,
+                "impression"
+            )
+
+            let response = HTTPURLResponse(
+                url: expectedURL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "success": true
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com/v1")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        await client.trackEvent(
+            request: SDKEventRequest(
+                apiKey: "test-key",
+                device: makeRequest().device,
+                adId: "ad-1",
+                adType: "banner",
+                eventType: "impression"
+            )
+        )
+    }
+
     private func makeURLSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [
@@ -259,7 +441,14 @@ final class RealAPIClientTests: XCTestCase {
                 osName: "iOS",
                 osVersion: "17.0",
                 locale: "en_US",
-                timezone: "UTC"
+                timezone: "UTC",
+                hasSim: true,
+                simCountry: "US",
+                isSimulator: true,
+                isSandboxReceipt: true,
+                suspiciousApps: [
+                    "cydia"
+                ]
             )
         )
     }

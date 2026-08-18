@@ -9,9 +9,28 @@ final class SDKBannerView: UIView {
         let label = UILabel()
         label.numberOfLines = 2
         label.font = .preferredFont(
-            forTextStyle: .body
+            forTextStyle: .headline
         )
         return label
+    }()
+
+    private let bodyLabel: UILabel = {
+        let label = UILabel()
+        label.numberOfLines = 2
+        label.font = .preferredFont(
+            forTextStyle: .footnote
+        )
+        label.textColor = .secondaryLabel
+        return label
+    }()
+
+    private let mediaImageView: UIImageView = {
+        let imageView = UIImageView()
+        imageView.contentMode = .scaleAspectFill
+        imageView.clipsToBounds = true
+        imageView.layer.cornerRadius = 8
+        imageView.backgroundColor = .tertiarySystemFill
+        return imageView
     }()
 
     private let openButton: UIButton = {
@@ -55,12 +74,22 @@ final class SDKBannerView: UIView {
         layer.masksToBounds = true
 
         titleLabel.text = content.title
+        bodyLabel.text = content.body
+        bodyLabel.isHidden = content.body?.isEmpty ?? true
+        openButton.setTitle(
+            content.ctaText,
+            for: .normal
+        )
 
+        mediaImageView.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
+        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
         openButton.translatesAutoresizingMaskIntoConstraints = false
         closeButton.translatesAutoresizingMaskIntoConstraints = false
 
+        addSubview(mediaImageView)
         addSubview(titleLabel)
+        addSubview(bodyLabel)
         addSubview(openButton)
         addSubview(closeButton)
 
@@ -77,12 +106,39 @@ final class SDKBannerView: UIView {
         )
 
         NSLayoutConstraint.activate([
-            titleLabel.leadingAnchor.constraint(
+            mediaImageView.leadingAnchor.constraint(
                 equalTo: leadingAnchor,
-                constant: 14
+                constant: 12
             ),
-            titleLabel.centerYAnchor.constraint(
+            mediaImageView.centerYAnchor.constraint(
                 equalTo: centerYAnchor
+            ),
+            mediaImageView.widthAnchor.constraint(
+                equalToConstant: 44
+            ),
+            mediaImageView.heightAnchor.constraint(
+                equalToConstant: 44
+            ),
+
+            titleLabel.leadingAnchor.constraint(
+                equalTo: mediaImageView.trailingAnchor,
+                constant: 12
+            ),
+            titleLabel.topAnchor.constraint(
+                equalTo: topAnchor,
+                constant: 10
+            ),
+
+            bodyLabel.leadingAnchor.constraint(
+                equalTo: titleLabel.leadingAnchor
+            ),
+            bodyLabel.topAnchor.constraint(
+                equalTo: titleLabel.bottomAnchor,
+                constant: 2
+            ),
+            bodyLabel.bottomAnchor.constraint(
+                lessThanOrEqualTo: bottomAnchor,
+                constant: -10
             ),
 
             openButton.leadingAnchor.constraint(
@@ -105,10 +161,17 @@ final class SDKBannerView: UIView {
                 equalTo: centerYAnchor
             )
         ])
+
+        loadMediaIfNeeded()
     }
 
     @objc
     private func openTapped() {
+        SDKTrackingClient.shared.fire(
+            content.tracking,
+            event: "click"
+        )
+
         UIApplication.shared.open(
             content.targetURL
         )
@@ -117,5 +180,35 @@ final class SDKBannerView: UIView {
     @objc
     private func closeTapped() {
         removeFromSuperview()
+    }
+
+    private func loadMediaIfNeeded() {
+        guard let mediaURL = content.mediaURL else {
+            mediaImageView.isHidden = true
+            return
+        }
+
+        Task { [weak self] in
+            do {
+                let (
+                    data,
+                    _
+                ) = try await URLSession.shared.data(
+                    from: mediaURL
+                )
+
+                guard let image = UIImage(data: data) else {
+                    return
+                }
+
+                await MainActor.run {
+                    self?.mediaImageView.image = image
+                }
+            } catch {
+                SDKLogger.log(
+                    "Banner media load failed: \(error.localizedDescription)"
+                )
+            }
+        }
     }
 }
