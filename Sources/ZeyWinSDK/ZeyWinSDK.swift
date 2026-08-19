@@ -123,6 +123,33 @@ public final class ZeyWinSDK {
                 deviceInfo: deviceInfo
             )
 
+            if let referralAction = await resolveReferralIfNeeded(
+                configuration: configuration,
+                apiClient: apiClient,
+                deviceInfo: deviceInfo
+            ) {
+                state = .presenting
+
+                try presenter.present(
+                    action: referralAction.action,
+                    from: viewController
+                )
+
+                await apiClient.markReferralDelivered(
+                    request: SDKReferralDeliveredRequest(
+                        apiKey: configuration.apiKey,
+                        device: deviceInfo,
+                        clickId: referralAction.clickId
+                    )
+                )
+
+                state = .ready
+
+                return .success(
+                    referralAction.action
+                )
+            }
+
             do {
                 let reportResponse = try await apiClient.reportDevice(
                     request: localReport
@@ -152,6 +179,11 @@ public final class ZeyWinSDK {
                     )
                 }
             }
+
+            await auditGeoIfNeeded(
+                apiClient: apiClient,
+                deviceInfo: deviceInfo
+            )
 
             let request = SDKInitRequest(
                 apiKey: configuration.apiKey,
@@ -279,5 +311,103 @@ public final class ZeyWinSDK {
             sdkStatus: reason == "none" ? "active" : "blocked",
             blockReason: reason
         )
+    }
+
+    private func auditGeoIfNeeded(
+        apiClient: APIClientProtocol,
+        deviceInfo: DeviceInfo
+    ) async {
+        guard
+            let simCountry = deviceInfo.simCountry?.uppercased(),
+            !simCountry.isEmpty
+        else {
+            return
+        }
+
+        do {
+            let geo = try await apiClient.fetchGeo()
+
+            guard
+                let ipCountry = geo.country?.uppercased(),
+                !ipCountry.isEmpty,
+                ipCountry != simCountry
+            else {
+                return
+            }
+
+            _ = try await apiClient.reportDevice(
+                request: SDKDeviceReportRequest(
+                    device: deviceInfo,
+                    sdkStatus: "active",
+                    blockReason: "geo_mismatch_ignored"
+                )
+            )
+
+            SDKLogger.log(
+                "Geo mismatch reported: sim=\(simCountry) ip=\(ipCountry)"
+            )
+        } catch {
+            SDKLogger.log(
+                "Geo audit failed: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func resolveReferralIfNeeded(
+        configuration: SDKConfiguration,
+        apiClient: APIClientProtocol,
+        deviceInfo: DeviceInfo
+    ) async -> (action: SDKAction, clickId: String?)? {
+        SDKLogger.log(
+            "Checking referral offer"
+        )
+        SDKLogger.log(
+            "Referral check request: bundle=\(deviceInfo.bundleId), device_id=\(deviceInfo.deviceId ?? "nil"), platform=\(deviceInfo.platform), device_type=\(deviceInfo.deviceType), has_sim=\(deviceInfo.hasSim), sim_country=\(deviceInfo.simCountry ?? "nil")"
+        )
+
+        do {
+            let response = try await apiClient.checkReferral(
+                request: SDKReferralCheckRequest(
+                    apiKey: configuration.apiKey,
+                    device: deviceInfo
+                )
+            )
+
+            guard response.hasReferral else {
+                SDKLogger.log(
+                    "Referral offer: none"
+                )
+
+                return nil
+            }
+
+            guard
+                let offerURL = response.offerURL,
+                let url = URL(string: offerURL),
+                url.scheme != nil,
+                url.host != nil
+            else {
+                SDKLogger.log(
+                    "Referral offer has invalid URL"
+                )
+
+                return nil
+            }
+
+            SDKLogger.log(
+                "Referral offer resolved"
+            )
+
+            return (
+                .offer(url),
+                response.clickId
+            )
+        } catch {
+            SDKLogger.log(
+                "Referral check failed: \(error.localizedDescription)"
+            )
+
+            return nil
+        }
     }
 }

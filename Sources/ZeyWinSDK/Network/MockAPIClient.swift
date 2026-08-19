@@ -63,7 +63,41 @@ final class MockAPIClient: APIClientProtocol {
         }
     }
 
+    func fetchGeo() async throws -> SDKGeoResponse {
+        SDKGeoResponse(
+            country: "US"
+        )
+    }
+
+    func checkReferral(
+        request: SDKReferralCheckRequest
+    ) async throws -> SDKReferralResponse {
+        SDKReferralResponse(
+            hasReferral: false,
+            offerURL: nil,
+            clickId: nil
+        )
+    }
+
+    func checkReferralByClick(
+        request: SDKReferralCheckByClickRequest
+    ) async throws -> SDKReferralResponse {
+        SDKReferralResponse(
+            hasReferral: false,
+            offerURL: nil,
+            clickId: nil
+        )
+    }
+
+    func markReferralDelivered(
+        request: SDKReferralDeliveredRequest
+    ) async {}
+
     func trackEvent(
         request: SDKEventRequest
+    ) async {}
+
+    func trackWebView(
+        request: SDKWebViewEventRequest
     ) async {}
 }

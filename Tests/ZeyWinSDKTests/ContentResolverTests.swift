@@ -73,7 +73,7 @@ final class ContentResolverTests: XCTestCase {
         )
     }
 
-    func testUnityInterstitialResponseResolvesToOffer() throws {
+    func testUnityInterstitialResponseResolvesToInternalAd() throws {
         let response = SDKInitResponse(
             action: "interstitial",
             adType: .interstitial,
@@ -88,8 +88,11 @@ final class ContentResolverTests: XCTestCase {
 
         XCTAssertEqual(
             action,
-            .offer(
-                URL(string: "https://example.com/ad.html")!
+            .internalAd(
+                SDKFullscreenAdContent(
+                    mediaURL: URL(string: "https://example.com/ad.html")!,
+                    targetURL: URL(string: "https://example.com/click")!
+                )
             )
         )
     }
@@ -112,6 +115,31 @@ final class ContentResolverTests: XCTestCase {
                 SDKBannerContent(
                     title: "Install",
                     targetURL: URL(string: "https://example.com/click")!,
+                    ctaText: "Install"
+                )
+            )
+        )
+    }
+
+    func testUnityBannerResponsePrefersStoreURLForCrossPromo() throws {
+        let response = SDKInitResponse(
+            action: "banner",
+            adType: .banner,
+            clickURL: "https://example.com/offer",
+            storeURL: "https://apps.apple.com/app/id123",
+            ctaText: "Install"
+        )
+
+        let action = try resolver.resolve(
+            response: response
+        )
+
+        XCTAssertEqual(
+            action,
+            .banner(
+                SDKBannerContent(
+                    title: "Install",
+                    targetURL: URL(string: "https://apps.apple.com/app/id123")!,
                     ctaText: "Install"
                 )
             )

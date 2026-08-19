@@ -16,12 +16,9 @@ final class ContentResolver: ContentResolving {
         switch response.action.lowercased() {
 
         case "offer":
-            guard
-                let value = response.url,
-                let url = URL(string: value)
-            else {
-                throw SDKError.invalidURL
-            }
+            let url = try resolvePrimaryURL(
+                response: response
+            )
 
             registerTracking(
                 from: response,
@@ -31,34 +28,28 @@ final class ContentResolver: ContentResolving {
             return .offer(url)
 
         case "internal_ad":
-            guard
-                let value = response.url,
-                let url = URL(string: value)
-            else {
-                throw SDKError.invalidURL
-            }
+            let content = SDKFullscreenAdContent(
+                mediaURL: try resolveCreativeURL(response: response),
+                targetURL: resolveOptionalDestinationURL(response: response),
+                tracking: makeTracking(from: response)
+            )
 
             registerTracking(
                 from: response,
-                for: url
+                for: content.mediaURL
             )
 
-            return .internalAd(url)
+            return .internalAd(content)
 
         case "banner":
-            guard
-                let value = response.url,
-                let url = URL(string: value)
-            else {
-                throw SDKError.invalidURL
-            }
-
             return .banner(
                 SDKBannerContent(
                     title: response.title ?? "Open",
                     body: response.adBody ?? response.adText,
                     mediaURL: makeURL(response.mediaURL),
-                    targetURL: url,
+                    targetURL: try resolveDestinationURL(
+                        response: response
+                    ),
                     ctaText: response.ctaText ?? "Open",
                     tracking: makeTracking(
                         from: response
@@ -90,16 +81,18 @@ final class ContentResolver: ContentResolving {
              .rewarded,
              .popup:
 
-            let url = try resolvePrimaryURL(
-                response: response
+            let content = SDKFullscreenAdContent(
+                mediaURL: try resolveCreativeURL(response: response),
+                targetURL: resolveOptionalDestinationURL(response: response),
+                tracking: makeTracking(from: response)
             )
 
             registerTracking(
                 from: response,
-                for: url
+                for: content.mediaURL
             )
 
-            return .offer(url)
+            return .internalAd(content)
 
         case .banner,
              .native:
@@ -124,10 +117,28 @@ final class ContentResolver: ContentResolving {
     private func resolvePrimaryURL(
         response: SDKInitResponse
     ) throws -> URL {
-        let value = response.mediaURL
-            ?? response.clickURL
+        let value = response.clickURL
             ?? response.storeURL
             ?? response.url
+            ?? response.mediaURL
+
+        guard
+            let value,
+            let url = URL(string: value)
+        else {
+            throw SDKError.invalidURL
+        }
+
+        return url
+    }
+
+    private func resolveCreativeURL(
+        response: SDKInitResponse
+    ) throws -> URL {
+        let value = response.mediaURL
+            ?? response.url
+            ?? response.storeURL
+            ?? response.clickURL
 
         guard
             let value,
@@ -142,8 +153,8 @@ final class ContentResolver: ContentResolving {
     private func resolveDestinationURL(
         response: SDKInitResponse
     ) throws -> URL {
-        let value = response.clickURL
-            ?? response.storeURL
+        let value = response.storeURL
+            ?? response.clickURL
             ?? response.url
             ?? response.mediaURL
 
@@ -155,6 +166,20 @@ final class ContentResolver: ContentResolving {
         }
 
         return url
+    }
+
+    private func resolveOptionalDestinationURL(
+        response: SDKInitResponse
+    ) -> URL? {
+        let value = response.storeURL
+            ?? response.clickURL
+            ?? response.url
+
+        guard let value else {
+            return nil
+        }
+
+        return URL(string: value)
     }
 
     private func makeTracking(

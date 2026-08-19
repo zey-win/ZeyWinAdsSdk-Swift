@@ -28,7 +28,7 @@ final class DeviceInfoProvider: DeviceInfoProviding {
     func collect() -> DeviceInfo {
         let bundle = Bundle.main
         let device = UIDevice.current
-        let simCountries = collectSIMCountries()
+        let simInfo = collectSIMInfo()
 
         return DeviceInfo(
             bundleId: bundle.bundleIdentifier ?? "unknown",
@@ -45,8 +45,8 @@ final class DeviceInfoProvider: DeviceInfoProviding {
             platform: "ios",
             deviceType: UIDevice.current.userInterfaceIdiom == .pad ? "tablet" : "phone",
             deviceId: device.identifierForVendor?.uuidString,
-            hasSim: !simCountries.isEmpty,
-            simCountry: simCountries.first,
+            hasSim: simInfo.hasSIM,
+            simCountry: simInfo.countries.first,
             isSimulator: isRunningOnSimulator,
             isJailbroken: isJailbroken,
             isSandboxReceipt: isSandboxReceipt,
@@ -54,20 +54,51 @@ final class DeviceInfoProvider: DeviceInfoProviding {
         )
     }
 
-    private func collectSIMCountries() -> [String] {
+    private func collectSIMInfo() -> (hasSIM: Bool, countries: [String]) {
         let networkInfo = CTTelephonyNetworkInfo()
 
         if let providers = networkInfo.serviceSubscriberCellularProviders {
-            return Array(
+            let countries = Array(
                 Set(
                     providers.values.compactMap {
-                        $0.isoCountryCode?.uppercased()
+                        normalizedCountryCode(
+                            $0.isoCountryCode
+                        )
                     }
                 )
             ).sorted()
+
+            return (
+                !providers.isEmpty,
+                countries
+            )
         }
 
-        return []
+        return (
+            false,
+            []
+        )
+    }
+
+    private func normalizedCountryCode(
+        _ code: String?
+    ) -> String? {
+        guard let code else {
+            return nil
+        }
+
+        let normalized = code
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .uppercased()
+
+        guard
+            normalized.count == 2,
+            normalized.allSatisfy(\.isLetter)
+        else {
+            return nil
+        }
+
+        return normalized
     }
 
     private var isRunningOnSimulator: Bool {

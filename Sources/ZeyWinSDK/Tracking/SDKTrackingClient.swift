@@ -69,6 +69,49 @@ final class SDKTrackingClient {
         }
     }
 
+    func trackWebView(
+        _ tracking: SDKAdTracking?,
+        status: String,
+        failReason: String? = nil
+    ) {
+        guard
+            let tracking,
+            let adId = tracking.adId,
+            !adId.isEmpty
+        else {
+            return
+        }
+
+        lock.lock()
+        let apiClient = self.apiClient
+        let apiKey = self.apiKey
+        let device = self.device
+        lock.unlock()
+
+        guard
+            let apiClient,
+            let apiKey,
+            let device
+        else {
+            return
+        }
+
+        let request = SDKWebViewEventRequest(
+            apiKey: apiKey,
+            device: device,
+            adId: adId,
+            adType: tracking.adType,
+            status: status,
+            failReason: failReason
+        )
+
+        Task.detached(priority: .utility) {
+            await apiClient.trackWebView(
+                request: request
+            )
+        }
+    }
+
     private func sendEvent(
         _ tracking: SDKAdTracking?,
         event: String

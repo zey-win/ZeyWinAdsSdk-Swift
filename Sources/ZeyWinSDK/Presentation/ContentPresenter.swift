@@ -16,9 +16,11 @@ final class ContentPresenter: ContentPresenting {
                 from: viewController
             )
 
-        case .internalAd(let url):
+        case .internalAd(let content):
             presentWebView(
-                url: url,
+                url: content.mediaURL,
+                clickThroughURL: content.targetURL,
+                tracking: content.tracking,
                 from: viewController
             )
 
@@ -35,23 +37,20 @@ final class ContentPresenter: ContentPresenting {
 
     private func presentWebView(
         url: URL,
+        clickThroughURL: URL? = nil,
+        tracking: SDKAdTracking? = nil,
         from viewController: UIViewController
     ) {
         let webViewController = SDKWebViewController(
             url: url,
-            tracking: SDKTrackingRegistry.shared.tracking(
-                for: url
-            )
+            clickThroughURL: clickThroughURL,
+            tracking: tracking ?? SDKTrackingRegistry.shared.tracking(for: url)
         )
 
-        let navigationController = UINavigationController(
-            rootViewController: webViewController
-        )
-
-        navigationController.modalPresentationStyle = .fullScreen
+        webViewController.modalPresentationStyle = .fullScreen
 
         viewController.present(
-            navigationController,
+            webViewController,
             animated: true
         )
     }

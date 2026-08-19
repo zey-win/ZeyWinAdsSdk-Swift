@@ -25,6 +25,10 @@ final class RealAPIClientTests: XCTestCase {
                 "test-key"
             )
             XCTAssertEqual(
+                request.value(forHTTPHeaderField: "X-API-Key"),
+                "test-key"
+            )
+            XCTAssertEqual(
                 request.value(forHTTPHeaderField: "X-Custom"),
                 "custom-value"
             )
@@ -349,6 +353,278 @@ final class RealAPIClientTests: XCTestCase {
         )
     }
 
+    func testFetchGeoUsesGetAndDecodesCountry() async throws {
+        let expectedURL = URL(string: "https://api.example.com/v1/geo")!
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(
+                request.url,
+                expectedURL
+            )
+            XCTAssertEqual(
+                request.httpMethod,
+                "GET"
+            )
+
+            let response = HTTPURLResponse(
+                url: expectedURL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "country": "us"
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com/v1")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        let response = try await client.fetchGeo()
+
+        XCTAssertEqual(
+            response.country,
+            "US"
+        )
+    }
+
+    func testCheckReferralPostsPayloadAndDecodesOffer() async throws {
+        let expectedURL = URL(string: "https://api.example.com/v1/referral/check")!
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(
+                request.url,
+                expectedURL
+            )
+            XCTAssertEqual(
+                request.httpMethod,
+                "POST"
+            )
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "X-ZeyWin-API-Key"),
+                "test-key"
+            )
+            XCTAssertEqual(
+                request.value(forHTTPHeaderField: "X-API-Key"),
+                "test-key"
+            )
+
+            let body = try XCTUnwrap(request.httpBodyStream?.readAllData())
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any]
+            )
+
+            XCTAssertEqual(
+                json["api_key"] as? String,
+                "test-key"
+            )
+            XCTAssertEqual(
+                json["bundle_id"] as? String,
+                "com.example.app"
+            )
+            XCTAssertEqual(
+                json["device_id"] as? String,
+                "device-1"
+            )
+            XCTAssertEqual(
+                json["sim_country"] as? String,
+                "US"
+            )
+
+            let response = HTTPURLResponse(
+                url: expectedURL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "has_referral": true,
+                        "offer_url": "https://example.com/force",
+                        "click_id": "force_123"
+                      }
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com/v1")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        let response = try await client.checkReferral(
+            request: SDKReferralCheckRequest(
+                apiKey: "test-key",
+                device: makeRequest().device
+            )
+        )
+
+        XCTAssertTrue(
+            response.hasReferral
+        )
+        XCTAssertEqual(
+            response.offerURL,
+            "https://example.com/force"
+        )
+        XCTAssertEqual(
+            response.clickId,
+            "force_123"
+        )
+    }
+
+    func testCheckReferralByClickPostsClickId() async throws {
+        let expectedURL = URL(string: "https://api.example.com/v1/referral/check-by-click")!
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(
+                request.url,
+                expectedURL
+            )
+            XCTAssertEqual(
+                request.httpMethod,
+                "POST"
+            )
+
+            let body = try XCTUnwrap(request.httpBodyStream?.readAllData())
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any]
+            )
+
+            XCTAssertEqual(
+                json["click_id"] as? String,
+                "click-1"
+            )
+
+            let response = HTTPURLResponse(
+                url: expectedURL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "success": true,
+                      "data": {
+                        "has_referral": false
+                      }
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com/v1")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        let response = try await client.checkReferralByClick(
+            request: SDKReferralCheckByClickRequest(
+                apiKey: "test-key",
+                device: makeRequest().device,
+                clickId: "click-1"
+            )
+        )
+
+        XCTAssertFalse(
+            response.hasReferral
+        )
+    }
+
+    func testMarkReferralDeliveredAcceptsSuccessWithoutData() async throws {
+        let expectedURL = URL(string: "https://api.example.com/v1/referral/delivered")!
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(
+                request.url,
+                expectedURL
+            )
+            XCTAssertEqual(
+                request.httpMethod,
+                "POST"
+            )
+
+            let body = try XCTUnwrap(request.httpBodyStream?.readAllData())
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any]
+            )
+
+            XCTAssertEqual(
+                json["api_key"] as? String,
+                "test-key"
+            )
+            XCTAssertEqual(
+                json["bundle_id"] as? String,
+                "com.example.app"
+            )
+            XCTAssertEqual(
+                json["click_id"] as? String,
+                "force_123"
+            )
+
+            let response = HTTPURLResponse(
+                url: expectedURL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "success": true
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com/v1")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        await client.markReferralDelivered(
+            request: SDKReferralDeliveredRequest(
+                apiKey: "test-key",
+                device: makeRequest().device,
+                clickId: "force_123"
+            )
+        )
+    }
+
     func testTrackEventAcceptsSuccessWithoutData() async throws {
         let expectedURL = URL(string: "https://api.example.com/v1/events")!
 
@@ -421,6 +697,130 @@ final class RealAPIClientTests: XCTestCase {
         )
     }
 
+    func testTrackWebViewPostsShownEvent() async throws {
+        let expectedURL = URL(string: "https://api.example.com/v1/events/webview")!
+
+        MockURLProtocol.requestHandler = { request in
+            XCTAssertEqual(
+                request.url,
+                expectedURL
+            )
+            XCTAssertEqual(
+                request.httpMethod,
+                "POST"
+            )
+
+            let body = try XCTUnwrap(request.httpBodyStream?.readAllData())
+            let json = try XCTUnwrap(
+                JSONSerialization.jsonObject(with: body) as? [String: Any]
+            )
+
+            XCTAssertEqual(
+                json["api_key"] as? String,
+                "test-key"
+            )
+            XCTAssertEqual(
+                json["bundle_id"] as? String,
+                "com.example.app"
+            )
+            XCTAssertEqual(
+                json["ad_id"] as? String,
+                "ad-1"
+            )
+            XCTAssertEqual(
+                json["ad_type"] as? String,
+                "interstitial"
+            )
+            XCTAssertEqual(
+                json["status"] as? String,
+                "shown"
+            )
+            XCTAssertNil(
+                json["fail_reason"]
+            )
+
+            let response = HTTPURLResponse(
+                url: expectedURL,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "success": true
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com/v1")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        await client.trackWebView(
+            request: SDKWebViewEventRequest(
+                apiKey: "test-key",
+                device: makeRequest().device,
+                adId: "ad-1",
+                adType: "interstitial",
+                status: "shown"
+            )
+        )
+    }
+
+    func testReportDeviceAcceptsSuccessWithoutData() async throws {
+        MockURLProtocol.requestHandler = { request in
+            let response = HTTPURLResponse(
+                url: request.url!,
+                statusCode: 200,
+                httpVersion: nil,
+                headerFields: nil
+            )!
+
+            return (
+                response,
+                Data(
+                    """
+                    {
+                      "success": true
+                    }
+                    """.utf8
+                )
+            )
+        }
+
+        let client = RealAPIClient(
+            configuration: SDKProductionConfiguration(
+                baseURL: URL(string: "https://api.example.com/v1")!
+            ),
+            urlSession: makeURLSession()
+        )
+
+        let response = try await client.reportDevice(
+            request: SDKDeviceReportRequest(
+                device: makeRequest().device,
+                sdkStatus: "active",
+                blockReason: "none"
+            )
+        )
+
+        XCTAssertEqual(
+            response.sdkStatus,
+            "active"
+        )
+        XCTAssertNil(
+            response.blockReason
+        )
+    }
+
     private func makeURLSession() -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.protocolClasses = [
@@ -442,6 +842,7 @@ final class RealAPIClientTests: XCTestCase {
                 osVersion: "17.0",
                 locale: "en_US",
                 timezone: "UTC",
+                deviceId: "device-1",
                 hasSim: true,
                 simCountry: "US",
                 isSimulator: true,
