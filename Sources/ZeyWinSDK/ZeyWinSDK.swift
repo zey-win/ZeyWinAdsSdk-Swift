@@ -13,6 +13,7 @@ public final class ZeyWinSDK {
     private let deviceInfoProvider: DeviceInfoProviding
     private let resolver: ContentResolving
     private let presenter: ContentPresenting
+    private var fullscreenAdTimer: Timer?
 
     private init(
         deviceInfoProvider: DeviceInfoProviding = DeviceInfoProvider(),
@@ -104,6 +105,10 @@ public final class ZeyWinSDK {
             )
         }
 
+        presenter.presentLoading(
+            from: viewController
+        )
+
         do {
             state = .collectingDeviceInfo
 
@@ -160,6 +165,7 @@ public final class ZeyWinSDK {
                 )
 
                 if reportResponse.sdkStatus == "blocked" {
+                    presenter.dismissLoading()
                     state = .ready
 
                     return .success(
@@ -172,6 +178,7 @@ public final class ZeyWinSDK {
                 )
 
                 if localReport.sdkStatus == "blocked" {
+                    presenter.dismissLoading()
                     state = .ready
 
                     return .success(
@@ -185,9 +192,34 @@ public final class ZeyWinSDK {
                 deviceInfo: deviceInfo
             )
 
+            if let stickyBanner = await resolveStickyBannerIfAvailable(
+                configuration: configuration,
+                apiClient: apiClient,
+                deviceInfo: deviceInfo
+            ) {
+                presenter.dismissLoading()
+                presenter.presentStickyBanner(
+                    content: stickyBanner,
+                    from: viewController
+                )
+                scheduleFullscreenAds(
+                    configuration: configuration,
+                    apiClient: apiClient,
+                    deviceInfo: deviceInfo,
+                    from: viewController
+                )
+
+                state = .ready
+
+                return .success(
+                    .banner(stickyBanner)
+                )
+            }
+
             let request = SDKInitRequest(
                 apiKey: configuration.apiKey,
-                device: deviceInfo
+                device: deviceInfo,
+                adType: .interstitial
             )
 
             state = .requesting
@@ -211,6 +243,7 @@ public final class ZeyWinSDK {
                     "Backend verdict: none"
                 )
 
+                presenter.dismissLoading()
                 state = .ready
 
                 return .success(
@@ -222,6 +255,7 @@ public final class ZeyWinSDK {
                     "Backend verdict: blocked(\(reason ?? "unknown"))"
                 )
 
+                presenter.dismissLoading()
                 state = .ready
 
                 return .success(
@@ -247,6 +281,8 @@ public final class ZeyWinSDK {
             }
 
         } catch let error as SDKError {
+            presenter.dismissLoading()
+
             SDKLogger.log(
                 "SDK failed: \(error.localizedDescription)"
             )
@@ -260,6 +296,7 @@ public final class ZeyWinSDK {
             )
 
         } catch {
+            presenter.dismissLoading()
 
             let sdkError = SDKError.unknown(
                 error
@@ -279,9 +316,86 @@ public final class ZeyWinSDK {
         }
     }
 
+    @discardableResult
+    public func showRewarded(
+        from viewController: UIViewController
+    ) async -> Result<SDKAction, SDKError> {
+        await showFullscreenAd(
+            adType: .rewarded,
+            from: viewController
+        )
+    }
+
+    @discardableResult
+    public func showInterstitial(
+        from viewController: UIViewController
+    ) async -> Result<SDKAction, SDKError> {
+        await showFullscreenAd(
+            adType: .interstitial,
+            from: viewController
+        )
+    }
+
+    private func showFullscreenAd(
+        adType: SDKAdType,
+        from viewController: UIViewController
+    ) async -> Result<SDKAction, SDKError> {
+        guard let configuration else {
+            return .failure(.notInitialized)
+        }
+
+        guard let apiClient else {
+            return .failure(.apiClientUnavailable)
+        }
+
+        do {
+            let deviceInfo = deviceInfoProvider.collect()
+
+            SDKTrackingClient.shared.configure(
+                apiClient: apiClient,
+                apiKey: configuration.apiKey,
+                device: deviceInfo
+            )
+
+            let response = try await apiClient.fetchInitialConfiguration(
+                request: SDKInitRequest(
+                    apiKey: configuration.apiKey,
+                    device: deviceInfo,
+                    adType: adType
+                )
+            )
+
+            let action = try resolver.resolve(
+                response: response
+            )
+
+            guard case .internalAd = action else {
+                SDKLogger.log(
+                    "Manual fullscreen response ignored: \(action)"
+                )
+                return .success(action)
+            }
+
+            try presenter.present(
+                action: action,
+                from: viewController
+            )
+
+            return .success(action)
+        } catch let error as SDKError {
+            return .failure(error)
+        } catch {
+            return .failure(.unknown(error))
+        }
+    }
+
     public func reset() {
         configuration = nil
         apiClient = nil
+        fullscreenAdTimer?.invalidate()
+        fullscreenAdTimer = nil
+        presenter.dismissStickyBanner()
+        presenter.dismissLoading()
         state = .idle
 
         SDKLogger.log(
@@ -349,6 +463,151 @@ public final class ZeyWinSDK {
         } catch {
             SDKLogger.log(
                 "Geo audit failed: \(error.localizedDescription)"
+            )
+        }
+    }
+
+    private func resolveStickyBannerIfAvailable(
+        configuration: SDKConfiguration,
+        apiClient: APIClientProtocol,
+        deviceInfo: DeviceInfo
+    ) async -> SDKBannerContent? {
+        let deadline = Date().addingTimeInterval(30)
+
+        repeat {
+            if let content = await fetchStickyBannerOnce(
+                configuration: configuration,
+                apiClient: apiClient,
+                deviceInfo: deviceInfo
+            ) {
+                return content
+            }
+
+            guard Date() < deadline else {
+                break
+            }
+
+            try? await Task.sleep(
+                nanoseconds: 1_000_000_000
+            )
+        } while !Task.isCancelled
+
+        SDKLogger.log(
+            "Sticky banner was not resolved within 30 seconds"
+        )
+
+        return nil
+    }
+
+    private func fetchStickyBannerOnce(
+        configuration: SDKConfiguration,
+        apiClient: APIClientProtocol,
+        deviceInfo: DeviceInfo
+    ) async -> SDKBannerContent? {
+        for adType in [SDKAdType.native, .banner] {
+            do {
+                SDKLogger.log(
+                    "Requesting sticky banner: \(adType.rawValue)"
+                )
+
+                let response = try await apiClient.fetchInitialConfiguration(
+                    request: SDKInitRequest(
+                        apiKey: configuration.apiKey,
+                        device: deviceInfo,
+                        adType: adType
+                    )
+                )
+
+                let action = try resolver.resolve(
+                    response: response
+                )
+
+                guard case .banner(let content) = action else {
+                    SDKLogger.log(
+                        "Sticky banner response ignored: \(action)"
+                    )
+                    continue
+                }
+
+                SDKLogger.log(
+                    "Sticky banner resolved: \(adType.rawValue)"
+                )
+                return content
+            } catch {
+                SDKLogger.log(
+                    "Sticky banner unavailable: \(adType.rawValue) \(error.localizedDescription)"
+                )
+            }
+        }
+
+        return nil
+    }
+
+    private func scheduleFullscreenAds(
+        configuration: SDKConfiguration,
+        apiClient: APIClientProtocol,
+        deviceInfo: DeviceInfo,
+        from viewController: UIViewController
+    ) {
+        fullscreenAdTimer?.invalidate()
+        fullscreenAdTimer = Timer.scheduledTimer(
+            withTimeInterval: 120,
+            repeats: true
+        ) { [weak self, weak viewController] _ in
+            Task { @MainActor in
+                guard
+                    let self,
+                    let viewController
+                else {
+                    return
+                }
+
+                await self.presentScheduledFullscreenAd(
+                    configuration: configuration,
+                    apiClient: apiClient,
+                    deviceInfo: deviceInfo,
+                    from: viewController
+                )
+            }
+        }
+    }
+
+    private func presentScheduledFullscreenAd(
+        configuration: SDKConfiguration,
+        apiClient: APIClientProtocol,
+        deviceInfo: DeviceInfo,
+        from viewController: UIViewController
+    ) async {
+        do {
+            SDKLogger.log(
+                "Requesting scheduled fullscreen ad"
+            )
+
+            let response = try await apiClient.fetchInitialConfiguration(
+                request: SDKInitRequest(
+                    apiKey: configuration.apiKey,
+                    device: deviceInfo,
+                    adType: .interstitial
+                )
+            )
+            let action = try resolver.resolve(
+                response: response
+            )
+
+            guard case .internalAd = action else {
+                SDKLogger.log(
+                    "Scheduled fullscreen response ignored: \(action)"
+                )
+                return
+            }
+
+            try presenter.present(
+                action: action,
+                from: viewController
+            )
+        } catch {
+            SDKLogger.log(
+                "Scheduled fullscreen unavailable: \(error.localizedDescription)"
             )
         }
     }

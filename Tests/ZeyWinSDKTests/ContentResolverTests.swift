@@ -167,7 +167,7 @@ final class ContentResolverTests: XCTestCase {
             action,
             .banner(
                 SDKBannerContent(
-                    title: "Install",
+                    title: "Title",
                     body: "Body",
                     mediaURL: URL(string: "https://example.com/image.png")!,
                     targetURL: URL(string: "https://example.com/click")!,
@@ -181,4 +181,37 @@ final class ContentResolverTests: XCTestCase {
             )
         )
     }
+    func testBannerResponsePreservesPromoPopupFields() throws {
+        let response = SDKInitResponse(
+            action: "banner",
+            adType: .banner,
+            clickURL: "https://example.com/click",
+            adText: "Promo",
+            adBody: "Win today",
+            ctaText: "Play",
+            ctaText2: "More",
+            popupDelaySec: 30,
+            popupRepeatSec: 120
+        )
+
+        let action = try resolver.resolve(
+            response: response
+        )
+
+        XCTAssertEqual(
+            action,
+            .banner(
+                SDKBannerContent(
+                    title: "Promo",
+                    body: "Win today",
+                    targetURL: URL(string: "https://example.com/click")!,
+                    ctaText: "Play",
+                    secondaryCTAText: "More",
+                    popupDelaySec: 30,
+                    popupRepeatSec: 120
+                )
+            )
+        )
+    }
+
 }

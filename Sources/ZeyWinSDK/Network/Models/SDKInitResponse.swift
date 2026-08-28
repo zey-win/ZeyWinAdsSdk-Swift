@@ -8,6 +8,7 @@ public struct SDKInitResponse: Codable, Sendable {
     public let adType: SDKAdType?
     public let mediaType: String?
     public let mediaURL: String?
+    public let iconURL: String?
     public let clickURL: String?
     public let storeURL: String?
     public let impressionURL: String?
@@ -18,6 +19,11 @@ public struct SDKInitResponse: Codable, Sendable {
     public let adText: String?
     public let adBody: String?
     public let ctaText: String?
+    public let ctaText2: String?
+    public let popupDelaySec: Int?
+    public let popupRepeatSec: Int?
+    public let durationSec: Int?
+    public let skipAfterSec: Int?
 
     public init(
         action: String,
@@ -28,6 +34,7 @@ public struct SDKInitResponse: Codable, Sendable {
         adType: SDKAdType? = nil,
         mediaType: String? = nil,
         mediaURL: String? = nil,
+        iconURL: String? = nil,
         clickURL: String? = nil,
         storeURL: String? = nil,
         impressionURL: String? = nil,
@@ -37,7 +44,12 @@ public struct SDKInitResponse: Codable, Sendable {
         lockWebView: Bool = false,
         adText: String? = nil,
         adBody: String? = nil,
-        ctaText: String? = nil
+        ctaText: String? = nil,
+        ctaText2: String? = nil,
+        popupDelaySec: Int? = nil,
+        popupRepeatSec: Int? = nil,
+        durationSec: Int? = nil,
+        skipAfterSec: Int? = nil
     ) {
         self.action = action
         self.url = url
@@ -47,6 +59,7 @@ public struct SDKInitResponse: Codable, Sendable {
         self.adType = adType
         self.mediaType = mediaType
         self.mediaURL = mediaURL
+        self.iconURL = iconURL
         self.clickURL = clickURL
         self.storeURL = storeURL
         self.impressionURL = impressionURL
@@ -57,6 +70,11 @@ public struct SDKInitResponse: Codable, Sendable {
         self.adText = adText
         self.adBody = adBody
         self.ctaText = ctaText
+        self.ctaText2 = ctaText2
+        self.popupDelaySec = popupDelaySec
+        self.popupRepeatSec = popupRepeatSec
+        self.durationSec = durationSec
+        self.skipAfterSec = skipAfterSec
     }
 
     enum CodingKeys: String, CodingKey {
@@ -68,6 +86,7 @@ public struct SDKInitResponse: Codable, Sendable {
         case adType = "ad_type"
         case mediaType = "media_type"
         case mediaURL = "media_url"
+        case iconURL = "icon_url"
         case clickURL = "click_url"
         case storeURL = "store_url"
         case impressionURL = "impression_url"
@@ -78,6 +97,11 @@ public struct SDKInitResponse: Codable, Sendable {
         case adText = "ad_text"
         case adBody = "ad_body"
         case ctaText = "cta_text"
+        case ctaText2 = "cta_text_2"
+        case popupDelaySec = "popup_delay_sec"
+        case popupRepeatSec = "popup_repeat_sec"
+        case durationSec = "duration_sec"
+        case skipAfterSec = "skip_after_sec"
     }
 
     public init(from decoder: Decoder) throws {
@@ -99,6 +123,7 @@ public struct SDKInitResponse: Codable, Sendable {
             adType: adType,
             mediaType: try container.decodeIfPresent(String.self, forKey: .mediaType),
             mediaURL: try container.decodeIfPresent(String.self, forKey: .mediaURL),
+            iconURL: try container.decodeIfPresent(String.self, forKey: .iconURL),
             clickURL: try container.decodeIfPresent(String.self, forKey: .clickURL),
             storeURL: try container.decodeIfPresent(String.self, forKey: .storeURL),
             impressionURL: try container.decodeIfPresent(String.self, forKey: .impressionURL),
@@ -108,7 +133,12 @@ public struct SDKInitResponse: Codable, Sendable {
             lockWebView: try container.decodeIfPresent(Bool.self, forKey: .lockWebView) ?? false,
             adText: try container.decodeIfPresent(String.self, forKey: .adText),
             adBody: try container.decodeIfPresent(String.self, forKey: .adBody),
-            ctaText: try container.decodeIfPresent(String.self, forKey: .ctaText)
+            ctaText: try container.decodeIfPresent(String.self, forKey: .ctaText),
+            ctaText2: try container.decodeIfPresent(String.self, forKey: .ctaText2),
+            popupDelaySec: try container.decodeIfPresent(Int.self, forKey: .popupDelaySec),
+            popupRepeatSec: try container.decodeIfPresent(Int.self, forKey: .popupRepeatSec),
+            durationSec: try container.decodeIfPresent(Int.self, forKey: .durationSec),
+            skipAfterSec: try container.decodeIfPresent(Int.self, forKey: .skipAfterSec)
         )
     }
 }

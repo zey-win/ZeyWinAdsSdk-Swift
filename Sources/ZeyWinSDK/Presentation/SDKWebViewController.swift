@@ -1,3 +1,4 @@
+import AVFoundation
 import UIKit
 import WebKit
 
@@ -7,23 +8,59 @@ final class SDKWebViewController: UIViewController {
     private let url: URL
     private let clickThroughURL: URL?
     private let tracking: SDKAdTracking?
+    private let durationSec: Int?
+    private let skipAfterSec: Int?
+    private let onClose: (() -> Void)?
+    private var didNotifyClose = false
     private var didSendClickTracking = false
     private var didSendShownTracking = false
     private var didSendFailedTracking = false
+    private var didSendCompleteTracking = false
+    private var canClose = false
+    private var closeTimer: Timer?
+    private var player: AVPlayer?
+    private var playbackObserver: Any?
+    private var playbackEndObserver: NSObjectProtocol?
+    private var playerStatusObservation: NSKeyValueObservation?
+
+    private let playerView = SDKVideoPlayerView()
+    private let progressView: UIProgressView = {
+        let progressView = UIProgressView(progressViewStyle: .default)
+        progressView.trackTintColor = UIColor.white.withAlphaComponent(0.22)
+        progressView.progressTintColor = .white
+        progressView.progress = 0
+        return progressView
+    }()
+    private let timeLabel: UILabel = {
+        let label = UILabel()
+        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        label.textColor = .white
+        label.textAlignment = .center
+        label.text = "0:00"
+        return label
+    }()
+
     private let webView = WKWebView(
         frame: .zero,
         configuration: SDKWebViewController.makeWebViewConfiguration()
     )
     private let clickOverlay = UIControl()
+    private let closeButton = UIButton(type: .system)
 
     init(
         url: URL,
         clickThroughURL: URL? = nil,
-        tracking: SDKAdTracking?
+        tracking: SDKAdTracking?,
+        durationSec: Int? = nil,
+        skipAfterSec: Int? = nil,
+        onClose: (() -> Void)? = nil
     ) {
         self.url = url
         self.clickThroughURL = clickThroughURL
         self.tracking = tracking
+        self.durationSec = durationSec
+        self.skipAfterSec = skipAfterSec
+        self.onClose = onClose
         super.init(
             nibName: nil,
             bundle: nil
@@ -40,13 +77,90 @@ final class SDKWebViewController: UIViewController {
 
         view.backgroundColor = .black
 
-        setupWebView()
-        setupClickOverlayIfNeeded()
+        if isDirectVideoURL(url) {
+            setupNativeVideoPlayer()
+            setupClickOverlayIfNeeded()
+            setupVideoProgress()
+            setupCloseButtonIfNeeded()
+        } else {
+            setupWebView()
+            setupClickOverlayIfNeeded()
+            setupCloseButtonIfNeeded()
+        }
 
         SDKTrackingClient.shared.fire(
             tracking,
             event: "impression"
         )
+    }
+
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        player?.pause()
+        closeTimer?.invalidate()
+        removePlaybackObservers()
+        notifyCloseIfNeeded()
+    }
+
+    deinit {
+        closeTimer?.invalidate()
+    }
+
+    private func setupNativeVideoPlayer() {
+        playerView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(playerView)
+
+        NSLayoutConstraint.activate([
+            playerView.topAnchor.constraint(equalTo: view.topAnchor),
+            playerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            playerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            playerView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        let playerItem = AVPlayerItem(url: url)
+        let player = AVPlayer(playerItem: playerItem)
+        player.isMuted = true
+        player.actionAtItemEnd = .pause
+        self.player = player
+        playerView.player = player
+
+        playerStatusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
+            Task { @MainActor in
+                switch item.status {
+                case .readyToPlay:
+                    self?.trackWebViewShownIfNeeded()
+                    self?.player?.play()
+
+                case .failed:
+                    SDKLogger.log("Video playback failed: \(item.error?.localizedDescription ?? "unknown")")
+                    self?.trackWebViewFailure(reason: "video_error")
+
+                default:
+                    break
+                }
+            }
+        }
+
+        playbackEndObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: playerItem,
+            queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.completeVideoAndUnlockClose()
+            }
+        }
+
+        let interval = CMTime(seconds: 0.25, preferredTimescale: CMTimeScale(NSEC_PER_SEC))
+        playbackObserver = player.addPeriodicTimeObserver(
+            forInterval: interval,
+            queue: .main
+        ) { [weak self] time in
+            Task { @MainActor in
+                self?.updateVideoProgress(currentTime: time)
+            }
+        }
     }
 
     private func setupWebView() {
@@ -72,16 +186,9 @@ final class SDKWebViewController: UIViewController {
             ]
         )
 
-        if isDirectVideoURL(url) {
-            webView.loadHTMLString(
-                videoHTML(for: url),
-                baseURL: url.deletingLastPathComponent()
-            )
-        } else {
-            webView.load(
-                URLRequest(url: url)
-            )
-        }
+        webView.load(
+            URLRequest(url: url)
+        )
     }
 
     private func setupClickOverlayIfNeeded() {
@@ -118,6 +225,143 @@ final class SDKWebViewController: UIViewController {
         )
     }
 
+
+    private func setupVideoProgress() {
+        progressView.translatesAutoresizingMaskIntoConstraints = false
+        timeLabel.translatesAutoresizingMaskIntoConstraints = false
+
+        view.addSubview(progressView)
+        view.addSubview(timeLabel)
+
+        NSLayoutConstraint.activate([
+            progressView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
+            progressView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
+            progressView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -28),
+
+            timeLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            timeLabel.bottomAnchor.constraint(equalTo: progressView.topAnchor, constant: -8)
+        ])
+    }
+
+    private func updateVideoProgress(currentTime: CMTime) {
+        guard let item = player?.currentItem else {
+            return
+        }
+
+        let current = CMTimeGetSeconds(currentTime)
+        let duration = resolvedVideoDuration(for: item)
+
+        guard duration > 0, current.isFinite else {
+            progressView.progress = 0
+            timeLabel.text = formatTime(current)
+            return
+        }
+
+        progressView.progress = Float(min(max(current / duration, 0), 1))
+        timeLabel.text = "\(formatTime(current)) / \(formatTime(duration))"
+    }
+
+    private func resolvedVideoDuration(for item: AVPlayerItem) -> Double {
+        let itemDuration = CMTimeGetSeconds(item.duration)
+        if itemDuration.isFinite, itemDuration > 0 {
+            return itemDuration
+        }
+
+        if let durationSec, durationSec > 0 {
+            return Double(durationSec)
+        }
+
+        return 0
+    }
+
+    private func formatTime(_ seconds: Double) -> String {
+        guard seconds.isFinite, seconds > 0 else {
+            return "0:00"
+        }
+
+        let totalSeconds = Int(seconds.rounded(.down))
+        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
+    }
+
+    private func completeVideoAndUnlockClose() {
+        trackCompleteIfNeeded()
+        canClose = true
+        showCloseButton()
+    }
+
+    private func removePlaybackObservers() {
+        if let playbackObserver {
+            player?.removeTimeObserver(playbackObserver)
+            self.playbackObserver = nil
+        }
+
+        if let playbackEndObserver {
+            NotificationCenter.default.removeObserver(playbackEndObserver)
+            self.playbackEndObserver = nil
+        }
+
+        playerStatusObservation = nil
+    }
+
+    private func setupCloseButtonIfNeeded() {
+        guard clickThroughURL != nil else {
+            return
+        }
+
+        closeButton.isHidden = true
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        closeButton.tintColor = .white
+        closeButton.layer.cornerRadius = 22
+        closeButton.clipsToBounds = true
+        closeButton.setTitle("x", for: .normal)
+        closeButton.titleLabel?.font = UIFont.systemFont(ofSize: 24, weight: .regular)
+        closeButton.addTarget(
+            self,
+            action: #selector(closeTapped),
+            for: .touchUpInside
+        )
+
+        view.addSubview(closeButton)
+        NSLayoutConstraint.activate([
+            closeButton.widthAnchor.constraint(equalToConstant: 44),
+            closeButton.heightAnchor.constraint(equalToConstant: 44),
+            closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            closeButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12)
+        ])
+        view.bringSubviewToFront(closeButton)
+
+        guard let skipAfterSec, skipAfterSec > 0 else {
+            closeButton.isHidden = true
+            return
+        }
+
+        let delay = TimeInterval(skipAfterSec)
+        closeTimer = Timer.scheduledTimer(
+            withTimeInterval: delay,
+            repeats: false
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.canClose = true
+                self?.showCloseButton()
+            }
+        }
+    }
+
+    private func showCloseButton() {
+        closeButton.isHidden = false
+        view.bringSubviewToFront(closeButton)
+    }
+
+    @objc
+    private func closeTapped() {
+        guard canClose else {
+            return
+        }
+
+        dismiss(animated: true)
+    }
+
     private func isDirectVideoURL(
         _ url: URL
     ) -> Bool {
@@ -127,63 +371,6 @@ final class SDKWebViewController: UIViewController {
             || path.hasSuffix(".mov")
             || path.hasSuffix(".m4v")
             || path.hasSuffix(".webm")
-    }
-
-    private func videoHTML(
-        for url: URL
-    ) -> String {
-        let source = url.absoluteString
-            .replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "\"", with: "&quot;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-
-        return """
-        <!doctype html>
-        <html>
-        <head>
-        <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-        <style>
-        html, body {
-            margin: 0;
-            padding: 0;
-            width: 100%;
-            height: 100%;
-            overflow: hidden;
-            background: #000;
-        }
-        video {
-            width: 100vw;
-            height: 100vh;
-            object-fit: contain;
-            background: #000;
-        }
-        </style>
-        </head>
-        <body>
-        <video id="creative" src="\(source)" autoplay muted playsinline loop preload="auto"></video>
-        <script>
-        const creative = document.getElementById('creative');
-        let reported = false;
-
-        function reportShown() {
-            if (reported) { return; }
-            reported = true;
-            window.location.href = 'zeywin-sdk://webview-shown';
-        }
-
-        function reportFailed() {
-            window.location.href = 'zeywin-sdk://webview-failed?reason=video_error';
-        }
-
-        creative.addEventListener('canplay', reportShown);
-        creative.addEventListener('playing', reportShown);
-        creative.addEventListener('error', reportFailed);
-        creative.play().catch(function() {});
-        </script>
-        </body>
-        </html>
-        """
     }
 
     private static func makeWebViewConfiguration() -> WKWebViewConfiguration {
@@ -204,11 +391,38 @@ final class SDKWebViewController: UIViewController {
         }
 
         trackClickIfNeeded()
-        clickOverlay.removeFromSuperview()
 
+        if isDirectVideoURL(url) {
+            UIApplication.shared.open(clickThroughURL)
+            return
+        }
+
+        clickOverlay.removeFromSuperview()
         webView.load(
             URLRequest(url: clickThroughURL)
         )
+    }
+}
+
+private final class SDKVideoPlayerView: UIView {
+
+    override static var layerClass: AnyClass {
+        AVPlayerLayer.self
+    }
+
+    var playerLayer: AVPlayerLayer {
+        layer as! AVPlayerLayer
+    }
+
+    var player: AVPlayer? {
+        get {
+            playerLayer.player
+        }
+        set {
+            playerLayer.player = newValue
+            playerLayer.videoGravity = .resizeAspectFill
+            backgroundColor = .black
+        }
     }
 }
 
@@ -350,6 +564,28 @@ extension SDKWebViewController: WKNavigationDelegate {
 
         return nsError.domain == "WebKitErrorDomain"
             && nsError.code == 204
+    }
+
+    private func notifyCloseIfNeeded() {
+        guard !didNotifyClose else {
+            return
+        }
+
+        didNotifyClose = true
+        onClose?()
+    }
+
+
+    private func trackCompleteIfNeeded() {
+        guard !didSendCompleteTracking else {
+            return
+        }
+
+        didSendCompleteTracking = true
+        SDKTrackingClient.shared.fire(
+            tracking,
+            event: "complete"
+        )
     }
 
     private func trackClickIfNeeded() {

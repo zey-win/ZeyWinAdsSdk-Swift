@@ -31,6 +31,8 @@ final class ContentResolver: ContentResolving {
             let content = SDKFullscreenAdContent(
                 mediaURL: try resolveCreativeURL(response: response),
                 targetURL: resolveOptionalDestinationURL(response: response),
+                durationSec: response.durationSec,
+                skipAfterSec: response.skipAfterSec,
                 tracking: makeTracking(from: response)
             )
 
@@ -44,13 +46,17 @@ final class ContentResolver: ContentResolving {
         case "banner":
             return .banner(
                 SDKBannerContent(
-                    title: response.title ?? "Open",
+                    title: response.adText ?? response.title ?? response.ctaText ?? "Open",
                     body: response.adBody ?? response.adText,
+                    iconURL: makeURL(response.iconURL),
                     mediaURL: makeURL(response.mediaURL),
                     targetURL: try resolveDestinationURL(
                         response: response
                     ),
                     ctaText: response.ctaText ?? "Open",
+                    secondaryCTAText: response.ctaText2,
+                    popupDelaySec: response.popupDelaySec,
+                    popupRepeatSec: response.popupRepeatSec,
                     tracking: makeTracking(
                         from: response
                     )
@@ -84,6 +90,8 @@ final class ContentResolver: ContentResolving {
             let content = SDKFullscreenAdContent(
                 mediaURL: try resolveCreativeURL(response: response),
                 targetURL: resolveOptionalDestinationURL(response: response),
+                durationSec: response.durationSec,
+                skipAfterSec: response.skipAfterSec,
                 tracking: makeTracking(from: response)
             )
 
@@ -99,13 +107,17 @@ final class ContentResolver: ContentResolving {
 
             return .banner(
                 SDKBannerContent(
-                    title: response.ctaText ?? response.adText ?? response.title ?? "Open",
+                    title: response.adText ?? response.title ?? response.ctaText ?? "Open",
                     body: response.adBody ?? response.adText,
+                    iconURL: makeURL(response.iconURL),
                     mediaURL: makeURL(response.mediaURL),
                     targetURL: try resolveDestinationURL(
                         response: response
                     ),
                     ctaText: response.ctaText ?? "Open",
+                    secondaryCTAText: response.ctaText2,
+                    popupDelaySec: response.popupDelaySec,
+                    popupRepeatSec: response.popupRepeatSec,
                     tracking: makeTracking(
                         from: response
                     )

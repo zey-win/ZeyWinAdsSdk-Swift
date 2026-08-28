@@ -1,214 +1,108 @@
 import UIKit
 
-@MainActor
-final class SDKBannerView: UIView {
-
+final class SDKBannerView: UIControl {
     private let content: SDKBannerContent
+    private let onClick: (URL) -> Void
 
-    private let titleLabel: UILabel = {
-        let label = UILabel()
-        label.numberOfLines = 2
-        label.font = .preferredFont(
-            forTextStyle: .headline
-        )
-        return label
-    }()
+    private let iconView = UIImageView()
+    private let titleLabel = UILabel()
+    private let bodyLabel = UILabel()
+    private let ctaLabel = UILabel()
 
-    private let bodyLabel: UILabel = {
-        let label = UILabel()
-        label.numberOfLines = 2
-        label.font = .preferredFont(
-            forTextStyle: .footnote
-        )
-        label.textColor = .secondaryLabel
-        return label
-    }()
-
-    private let mediaImageView: UIImageView = {
-        let imageView = UIImageView()
-        imageView.contentMode = .scaleAspectFill
-        imageView.clipsToBounds = true
-        imageView.layer.cornerRadius = 8
-        imageView.backgroundColor = .tertiarySystemFill
-        return imageView
-    }()
-
-    private let openButton: UIButton = {
-        let button = UIButton(
-            type: .system
-        )
-        button.setTitle(
-            "Open",
-            for: .normal
-        )
-        return button
-    }()
-
-    private let closeButton: UIButton = {
-        let button = UIButton(
-            type: .system
-        )
-        button.setTitle(
-            "×",
-            for: .normal
-        )
-        return button
-    }()
-
-    init(content: SDKBannerContent) {
+    init(content: SDKBannerContent, onClick: @escaping (URL) -> Void) {
         self.content = content
+        self.onClick = onClick
         super.init(frame: .zero)
-        setup()
+        setupUI()
+        bind()
+        addTarget(self, action: #selector(handleTap), for: .touchUpInside)
     }
 
-    @available(*, unavailable)
     required init?(coder: NSCoder) {
         fatalError("init(coder:) has not been implemented")
     }
 
-    private func setup() {
+    private func setupUI() {
         translatesAutoresizingMaskIntoConstraints = false
+        backgroundColor = .white
+        clipsToBounds = true
 
-        backgroundColor = .secondarySystemBackground
-        layer.cornerRadius = 14
-        layer.masksToBounds = true
+        iconView.translatesAutoresizingMaskIntoConstraints = false
+        iconView.contentMode = .scaleAspectFill
+        iconView.clipsToBounds = true
+        iconView.layer.cornerRadius = 5
+        iconView.backgroundColor = UIColor(red: 230 / 255, green: 238 / 255, blue: 245 / 255, alpha: 1)
+        addSubview(iconView)
 
-        titleLabel.text = content.title
-        bodyLabel.text = content.body
-        bodyLabel.isHidden = content.body?.isEmpty ?? true
-        openButton.setTitle(
-            content.ctaText,
-            for: .normal
-        )
-
-        mediaImageView.translatesAutoresizingMaskIntoConstraints = false
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
-        openButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.translatesAutoresizingMaskIntoConstraints = false
-
-        addSubview(mediaImageView)
+        titleLabel.font = .systemFont(ofSize: 14, weight: .bold)
+        titleLabel.textColor = .black
+        titleLabel.numberOfLines = 1
+        titleLabel.adjustsFontSizeToFitWidth = true
+        titleLabel.minimumScaleFactor = 0.75
         addSubview(titleLabel)
+
+        bodyLabel.translatesAutoresizingMaskIntoConstraints = false
+        bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        bodyLabel.textColor = .black
+        bodyLabel.textAlignment = .center
+        bodyLabel.numberOfLines = 1
+        bodyLabel.adjustsFontSizeToFitWidth = true
+        bodyLabel.minimumScaleFactor = 0.65
         addSubview(bodyLabel)
-        addSubview(openButton)
-        addSubview(closeButton)
 
-        openButton.addTarget(
-            self,
-            action: #selector(openTapped),
-            for: .touchUpInside
-        )
-
-        closeButton.addTarget(
-            self,
-            action: #selector(closeTapped),
-            for: .touchUpInside
-        )
+        ctaLabel.translatesAutoresizingMaskIntoConstraints = false
+        ctaLabel.font = .systemFont(ofSize: 11, weight: .bold)
+        ctaLabel.textColor = .white
+        ctaLabel.textAlignment = .center
+        ctaLabel.backgroundColor = UIColor(red: 38 / 255, green: 198 / 255, blue: 89 / 255, alpha: 1)
+        ctaLabel.adjustsFontSizeToFitWidth = true
+        ctaLabel.minimumScaleFactor = 0.6
+        addSubview(ctaLabel)
 
         NSLayoutConstraint.activate([
-            mediaImageView.leadingAnchor.constraint(
-                equalTo: leadingAnchor,
-                constant: 12
-            ),
-            mediaImageView.centerYAnchor.constraint(
-                equalTo: centerYAnchor
-            ),
-            mediaImageView.widthAnchor.constraint(
-                equalToConstant: 44
-            ),
-            mediaImageView.heightAnchor.constraint(
-                equalToConstant: 44
-            ),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 47),
+            iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            iconView.widthAnchor.constraint(equalToConstant: 34),
+            iconView.heightAnchor.constraint(equalToConstant: 34),
 
-            titleLabel.leadingAnchor.constraint(
-                equalTo: mediaImageView.trailingAnchor,
-                constant: 12
-            ),
-            titleLabel.topAnchor.constraint(
-                equalTo: topAnchor,
-                constant: 10
-            ),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
+            titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            titleLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: bodyLabel.leadingAnchor, constant: -12),
 
-            bodyLabel.leadingAnchor.constraint(
-                equalTo: titleLabel.leadingAnchor
-            ),
-            bodyLabel.topAnchor.constraint(
-                equalTo: titleLabel.bottomAnchor,
-                constant: 2
-            ),
-            bodyLabel.bottomAnchor.constraint(
-                lessThanOrEqualTo: bottomAnchor,
-                constant: -10
-            ),
+            bodyLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
+            bodyLabel.centerXAnchor.constraint(equalTo: centerXAnchor, constant: 58),
+            bodyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 12),
+            bodyLabel.trailingAnchor.constraint(lessThanOrEqualTo: ctaLabel.leadingAnchor, constant: -12),
 
-            openButton.leadingAnchor.constraint(
-                greaterThanOrEqualTo: titleLabel.trailingAnchor,
-                constant: 12
-            ),
-            openButton.centerYAnchor.constraint(
-                equalTo: centerYAnchor
-            ),
-
-            closeButton.leadingAnchor.constraint(
-                equalTo: openButton.trailingAnchor,
-                constant: 10
-            ),
-            closeButton.trailingAnchor.constraint(
-                equalTo: trailingAnchor,
-                constant: -12
-            ),
-            closeButton.centerYAnchor.constraint(
-                equalTo: centerYAnchor
-            )
+            ctaLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ctaLabel.topAnchor.constraint(equalTo: topAnchor),
+            ctaLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ctaLabel.widthAnchor.constraint(equalToConstant: 96)
         ])
-
-        loadMediaIfNeeded()
     }
 
-    @objc
-    private func openTapped() {
-        SDKTrackingClient.shared.fire(
-            content.tracking,
-            event: "click"
-        )
+    private func bind() {
+        titleLabel.text = content.title.isEmpty ? "Play now" : content.title
+        bodyLabel.text = (content.body?.isEmpty == false ? content.body : "Play and win today")
+        ctaLabel.text = (content.ctaText.isEmpty ? "Play now" : content.ctaText)
 
-        UIApplication.shared.open(
-            content.targetURL
-        )
-    }
-
-    @objc
-    private func closeTapped() {
-        removeFromSuperview()
-    }
-
-    private func loadMediaIfNeeded() {
-        guard let mediaURL = content.mediaURL else {
-            mediaImageView.isHidden = true
-            return
+        if let imageURL = content.iconURL ?? content.mediaURL {
+            loadImage(from: imageURL)
         }
+    }
 
-        Task { [weak self] in
-            do {
-                let (
-                    data,
-                    _
-                ) = try await URLSession.shared.data(
-                    from: mediaURL
-                )
+    @objc private func handleTap() {
+        onClick(content.targetURL)
+    }
 
-                guard let image = UIImage(data: data) else {
-                    return
-                }
-
-                await MainActor.run {
-                    self?.mediaImageView.image = image
-                }
-            } catch {
-                SDKLogger.log(
-                    "Banner media load failed: \(error.localizedDescription)"
-                )
+    private func loadImage(from url: URL) {
+        URLSession.shared.dataTask(with: url) { [weak self] data, _, _ in
+            guard let data, let image = UIImage(data: data) else { return }
+            DispatchQueue.main.async {
+                self?.iconView.image = image
             }
-        }
+        }.resume()
     }
 }
