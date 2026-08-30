@@ -22,21 +22,19 @@ final class SDKWebViewController: UIViewController {
     private var playbackObserver: Any?
     private var playbackEndObserver: NSObjectProtocol?
     private var playerStatusObservation: NSKeyValueObservation?
+    private var videoProgressTimer: Timer?
+    private var videoStartTime: CFTimeInterval = 0
 
     private let playerView = SDKVideoPlayerView()
-    private let progressView: UIProgressView = {
-        let progressView = UIProgressView(progressViewStyle: .default)
-        progressView.trackTintColor = UIColor.white.withAlphaComponent(0.22)
-        progressView.progressTintColor = .white
-        progressView.progress = 0
-        return progressView
-    }()
-    private let timeLabel: UILabel = {
+    private let countdownLabel: UILabel = {
         let label = UILabel()
-        label.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
+        label.font = .monospacedDigitSystemFont(ofSize: 30, weight: .regular)
         label.textColor = .white
         label.textAlignment = .center
-        label.text = "0:00"
+        label.backgroundColor = UIColor.black.withAlphaComponent(0.35)
+        label.layer.cornerRadius = 0
+        label.clipsToBounds = true
+        label.isHidden = false
         return label
     }()
 
@@ -78,9 +76,10 @@ final class SDKWebViewController: UIViewController {
         view.backgroundColor = .black
 
         if isDirectVideoURL(url) {
-            setupNativeVideoPlayer()
+            setupInlineVideoWebView()
             setupClickOverlayIfNeeded()
-            setupVideoProgress()
+            setupVideoCountdown()
+            startVideoProgressTimer()
             setupCloseButtonIfNeeded()
         } else {
             setupWebView()
@@ -99,12 +98,79 @@ final class SDKWebViewController: UIViewController {
         super.viewDidDisappear(animated)
         player?.pause()
         closeTimer?.invalidate()
+        videoProgressTimer?.invalidate()
         removePlaybackObservers()
         notifyCloseIfNeeded()
     }
 
     deinit {
         closeTimer?.invalidate()
+        videoProgressTimer?.invalidate()
+    }
+
+    private func setupInlineVideoWebView() {
+        webView.navigationDelegate = self
+        webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.isOpaque = false
+        webView.backgroundColor = .black
+        webView.scrollView.backgroundColor = .black
+        webView.scrollView.isScrollEnabled = false
+        webView.scrollView.bounces = false
+
+        view.addSubview(webView)
+
+        NSLayoutConstraint.activate([
+            webView.topAnchor.constraint(equalTo: view.topAnchor),
+            webView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            webView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
+        ])
+
+        webView.loadHTMLString(
+            makeInlineVideoHTML(for: url),
+            baseURL: url.deletingLastPathComponent()
+        )
+    }
+
+    private func makeInlineVideoHTML(for videoURL: URL) -> String {
+        let source = videoURL.absoluteString
+            .replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "\"", with: "&quot;")
+
+        return """
+        <!doctype html>
+        <html>
+        <head>
+          <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+          <style>
+            html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
+            video { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: cover; object-position: center center; background: #000; pointer-events: none; }
+            * { -webkit-user-select: none; -webkit-touch-callout: none; user-select: none; }
+          </style>
+        </head>
+        <body>
+          <video id="adVideo" autoplay muted playsinline webkit-playsinline preload="auto" disablepictureinpicture controlslist="nodownload nofullscreen noremoteplayback">
+            <source src="\(source)">
+          </video>
+          <script>
+            const video = document.getElementById('adVideo');
+            let shown = false;
+            function notify(name) { window.location.href = 'zeywin-sdk://' + name; }
+            function markShown() { if (!shown) { shown = true; notify('webview-shown'); } }
+            video.controls = false;
+            video.disablePictureInPicture = true;
+            video.addEventListener('playing', markShown);
+            video.addEventListener('canplay', function() { video.play().then(markShown).catch(function() {}); });
+            video.addEventListener('ended', function() { notify('webview-complete'); });
+            video.addEventListener('error', function() { notify('webview-failed'); });
+            document.addEventListener('visibilitychange', function() { if (!document.hidden) { video.play().catch(function() {}); } });
+            setTimeout(function retryPlay() {
+              if (video.paused && !video.ended) { video.play().catch(function() {}); setTimeout(retryPlay, 700); }
+            }, 250);
+          </script>
+        </body>
+        </html>
+        """
     }
 
     private func setupNativeVideoPlayer() {
@@ -122,6 +188,7 @@ final class SDKWebViewController: UIViewController {
         let player = AVPlayer(playerItem: playerItem)
         player.isMuted = true
         player.actionAtItemEnd = .pause
+        player.preventsDisplaySleepDuringVideoPlayback = true
         self.player = player
         playerView.player = player
 
@@ -134,7 +201,7 @@ final class SDKWebViewController: UIViewController {
 
                 case .failed:
                     SDKLogger.log("Video playback failed: \(item.error?.localizedDescription ?? "unknown")")
-                    self?.trackWebViewFailure(reason: "video_error")
+                    self?.handleNativeVideoFailure()
 
                 default:
                     break
@@ -191,6 +258,20 @@ final class SDKWebViewController: UIViewController {
         )
     }
 
+    private func handleNativeVideoFailure() {
+        removePlaybackObservers()
+        player?.pause()
+        player = nil
+        closeTimer?.invalidate()
+        closeTimer = nil
+        videoProgressTimer?.invalidate()
+        videoProgressTimer = nil
+        countdownLabel.isHidden = true
+        trackWebViewFailure(reason: "video_playback_error")
+        canClose = true
+        showCloseButton()
+    }
+
     private func setupClickOverlayIfNeeded() {
         guard clickThroughURL != nil else {
             return
@@ -226,21 +307,48 @@ final class SDKWebViewController: UIViewController {
     }
 
 
-    private func setupVideoProgress() {
-        progressView.translatesAutoresizingMaskIntoConstraints = false
-        timeLabel.translatesAutoresizingMaskIntoConstraints = false
+    private func setupVideoCountdown() {
+        countdownLabel.translatesAutoresizingMaskIntoConstraints = false
+        countdownLabel.text = "\(resolvedAdDuration())"
 
-        view.addSubview(progressView)
-        view.addSubview(timeLabel)
+        view.addSubview(countdownLabel)
 
         NSLayoutConstraint.activate([
-            progressView.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
-            progressView.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
-            progressView.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -28),
-
-            timeLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            timeLabel.bottomAnchor.constraint(equalTo: progressView.topAnchor, constant: -8)
+            countdownLabel.widthAnchor.constraint(equalToConstant: 58),
+            countdownLabel.heightAnchor.constraint(equalToConstant: 58),
+            countdownLabel.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
+            countdownLabel.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12)
         ])
+    }
+
+    private func startVideoProgressTimer() {
+        videoProgressTimer?.invalidate()
+        videoStartTime = CACurrentMediaTime()
+
+        videoProgressTimer = Timer.scheduledTimer(
+            withTimeInterval: 0.25,
+            repeats: true
+        ) { [weak self] _ in
+            Task { @MainActor in
+                self?.updateSyntheticVideoProgress()
+            }
+        }
+    }
+
+    private func updateSyntheticVideoProgress() {
+        let duration = Double(resolvedAdDuration())
+        guard duration > 0 else {
+            return
+        }
+
+        let elapsed = max(0, CACurrentMediaTime() - videoStartTime)
+        updateCloseCountdown(currentTime: elapsed)
+
+        if elapsed >= duration {
+            videoProgressTimer?.invalidate()
+            videoProgressTimer = nil
+            completeVideoAndUnlockClose()
+        }
     }
 
     private func updateVideoProgress(currentTime: CMTime) {
@@ -252,13 +360,11 @@ final class SDKWebViewController: UIViewController {
         let duration = resolvedVideoDuration(for: item)
 
         guard duration > 0, current.isFinite else {
-            progressView.progress = 0
-            timeLabel.text = formatTime(current)
+            updateCloseCountdown(currentTime: current)
             return
         }
 
-        progressView.progress = Float(min(max(current / duration, 0), 1))
-        timeLabel.text = "\(formatTime(current)) / \(formatTime(duration))"
+        updateCloseCountdown(currentTime: current)
     }
 
     private func resolvedVideoDuration(for item: AVPlayerItem) -> Double {
@@ -274,18 +380,36 @@ final class SDKWebViewController: UIViewController {
         return 0
     }
 
-    private func formatTime(_ seconds: Double) -> String {
-        guard seconds.isFinite, seconds > 0 else {
-            return "0:00"
+    private func updateCloseCountdown(currentTime: Double) {
+        guard !canClose else {
+            countdownLabel.isHidden = true
+            return
         }
 
-        let totalSeconds = Int(seconds.rounded(.down))
-        return String(format: "%d:%02d", totalSeconds / 60, totalSeconds % 60)
+        let remaining = Double(resolvedAdDuration()) - currentTime
+        countdownLabel.text = "\(max(0, Int(ceil(remaining))))"
+        countdownLabel.isHidden = false
+        view.bringSubviewToFront(countdownLabel)
+    }
+
+    private func resolvedAdDuration() -> Int {
+        if let skipAfterSec, skipAfterSec > 0 {
+            return skipAfterSec
+        }
+
+        if let durationSec, durationSec > 0 {
+            return durationSec
+        }
+
+        return 30
     }
 
     private func completeVideoAndUnlockClose() {
+        videoProgressTimer?.invalidate()
+        videoProgressTimer = nil
         trackCompleteIfNeeded()
         canClose = true
+        countdownLabel.isHidden = true
         showCloseButton()
     }
 
@@ -310,12 +434,14 @@ final class SDKWebViewController: UIViewController {
 
         closeButton.isHidden = true
         closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        closeButton.backgroundColor = UIColor.black.withAlphaComponent(0.42)
         closeButton.tintColor = .white
-        closeButton.layer.cornerRadius = 22
+        closeButton.layer.cornerRadius = 0
         closeButton.clipsToBounds = true
-        closeButton.setTitle("x", for: .normal)
-        closeButton.titleLabel?.font = UIFont.systemFont(ofSize: 24, weight: .regular)
+        closeButton.setTitle("×", for: .normal)
+        closeButton.setTitleColor(.white, for: .normal)
+        closeButton.titleLabel?.font = UIFont.systemFont(ofSize: 34, weight: .light)
+        closeButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 3, right: 0)
         closeButton.addTarget(
             self,
             action: #selector(closeTapped),
@@ -324,8 +450,8 @@ final class SDKWebViewController: UIViewController {
 
         view.addSubview(closeButton)
         NSLayoutConstraint.activate([
-            closeButton.widthAnchor.constraint(equalToConstant: 44),
-            closeButton.heightAnchor.constraint(equalToConstant: 44),
+            closeButton.widthAnchor.constraint(equalToConstant: 58),
+            closeButton.heightAnchor.constraint(equalToConstant: 58),
             closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             closeButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12)
         ])
@@ -343,12 +469,14 @@ final class SDKWebViewController: UIViewController {
         ) { [weak self] _ in
             Task { @MainActor in
                 self?.canClose = true
+                self?.countdownLabel.isHidden = true
                 self?.showCloseButton()
             }
         }
     }
 
     private func showCloseButton() {
+        countdownLabel.isHidden = true
         closeButton.isHidden = false
         view.bringSubviewToFront(closeButton)
     }
@@ -481,6 +609,11 @@ extension SDKWebViewController: WKNavigationDelegate {
             trackWebViewFailure(
                 reason: "video_error"
             )
+            canClose = true
+            showCloseButton()
+
+        case "webview-complete":
+            completeVideoAndUnlockClose()
 
         default:
             break

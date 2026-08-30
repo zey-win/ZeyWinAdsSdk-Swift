@@ -7,7 +7,9 @@ final class SDKBannerView: UIControl {
     private let iconView = UIImageView()
     private let titleLabel = UILabel()
     private let bodyLabel = UILabel()
+    private let ctaContainerView = UIView()
     private let ctaLabel = UILabel()
+    private let ctaButton = UIButton(type: .custom)
 
     init(content: SDKBannerContent, onClick: @escaping (URL) -> Void) {
         self.content = content
@@ -30,12 +32,12 @@ final class SDKBannerView: UIControl {
         iconView.translatesAutoresizingMaskIntoConstraints = false
         iconView.contentMode = .scaleAspectFill
         iconView.clipsToBounds = true
-        iconView.layer.cornerRadius = 5
+        iconView.layer.cornerRadius = 4
         iconView.backgroundColor = UIColor(red: 230 / 255, green: 238 / 255, blue: 245 / 255, alpha: 1)
         addSubview(iconView)
 
         titleLabel.translatesAutoresizingMaskIntoConstraints = false
-        titleLabel.font = .systemFont(ofSize: 14, weight: .bold)
+        titleLabel.font = .systemFont(ofSize: 11, weight: .bold)
         titleLabel.textColor = .black
         titleLabel.numberOfLines = 1
         titleLabel.adjustsFontSizeToFitWidth = true
@@ -43,7 +45,7 @@ final class SDKBannerView: UIControl {
         addSubview(titleLabel)
 
         bodyLabel.translatesAutoresizingMaskIntoConstraints = false
-        bodyLabel.font = .systemFont(ofSize: 13, weight: .regular)
+        bodyLabel.font = .systemFont(ofSize: 10, weight: .regular)
         bodyLabel.textColor = .black
         bodyLabel.textAlignment = .center
         bodyLabel.numberOfLines = 1
@@ -51,35 +53,54 @@ final class SDKBannerView: UIControl {
         bodyLabel.minimumScaleFactor = 0.65
         addSubview(bodyLabel)
 
+        ctaContainerView.translatesAutoresizingMaskIntoConstraints = false
+        ctaContainerView.backgroundColor = UIColor(red: 38 / 255, green: 198 / 255, blue: 89 / 255, alpha: 1)
+        ctaContainerView.isUserInteractionEnabled = true
+        addSubview(ctaContainerView)
+
         ctaLabel.translatesAutoresizingMaskIntoConstraints = false
-        ctaLabel.font = .systemFont(ofSize: 11, weight: .bold)
+        ctaLabel.font = .systemFont(ofSize: 8.5, weight: .bold)
         ctaLabel.textColor = .white
         ctaLabel.textAlignment = .center
-        ctaLabel.backgroundColor = UIColor(red: 38 / 255, green: 198 / 255, blue: 89 / 255, alpha: 1)
+        ctaLabel.backgroundColor = .clear
         ctaLabel.adjustsFontSizeToFitWidth = true
-        ctaLabel.minimumScaleFactor = 0.6
-        addSubview(ctaLabel)
+        ctaLabel.minimumScaleFactor = 0.42
+        ctaContainerView.addSubview(ctaLabel)
+
+        ctaButton.translatesAutoresizingMaskIntoConstraints = false
+        ctaButton.backgroundColor = .clear
+        ctaButton.addTarget(self, action: #selector(handleTap), for: .touchUpInside)
+        ctaContainerView.addSubview(ctaButton)
 
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 47),
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 54),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            iconView.widthAnchor.constraint(equalToConstant: 34),
-            iconView.heightAnchor.constraint(equalToConstant: 34),
+            iconView.widthAnchor.constraint(equalToConstant: 24),
+            iconView.heightAnchor.constraint(equalToConstant: 24),
 
-            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 12),
+            titleLabel.leadingAnchor.constraint(equalTo: iconView.trailingAnchor, constant: 10),
             titleLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            titleLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 120),
-            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: bodyLabel.leadingAnchor, constant: -12),
+            titleLabel.widthAnchor.constraint(greaterThanOrEqualToConstant: 105),
+            titleLabel.trailingAnchor.constraint(lessThanOrEqualTo: bodyLabel.leadingAnchor, constant: -10),
 
             bodyLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
-            bodyLabel.centerXAnchor.constraint(equalTo: centerXAnchor, constant: 58),
-            bodyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 12),
-            bodyLabel.trailingAnchor.constraint(lessThanOrEqualTo: ctaLabel.leadingAnchor, constant: -12),
+            bodyLabel.centerXAnchor.constraint(equalTo: centerXAnchor, constant: 50),
+            bodyLabel.leadingAnchor.constraint(greaterThanOrEqualTo: titleLabel.trailingAnchor, constant: 10),
+            bodyLabel.trailingAnchor.constraint(lessThanOrEqualTo: ctaContainerView.leadingAnchor, constant: -10),
 
-            ctaLabel.trailingAnchor.constraint(equalTo: trailingAnchor),
-            ctaLabel.topAnchor.constraint(equalTo: topAnchor),
-            ctaLabel.bottomAnchor.constraint(equalTo: bottomAnchor),
-            ctaLabel.widthAnchor.constraint(equalToConstant: 96)
+            ctaContainerView.trailingAnchor.constraint(equalTo: trailingAnchor),
+            ctaContainerView.topAnchor.constraint(equalTo: topAnchor),
+            ctaContainerView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            ctaContainerView.widthAnchor.constraint(equalToConstant: 166),
+
+            ctaLabel.leadingAnchor.constraint(equalTo: ctaContainerView.leadingAnchor, constant: 12),
+            ctaLabel.trailingAnchor.constraint(equalTo: ctaContainerView.trailingAnchor, constant: -50),
+            ctaLabel.centerYAnchor.constraint(equalTo: ctaContainerView.centerYAnchor),
+
+            ctaButton.leadingAnchor.constraint(equalTo: ctaContainerView.leadingAnchor),
+            ctaButton.trailingAnchor.constraint(equalTo: ctaContainerView.trailingAnchor),
+            ctaButton.topAnchor.constraint(equalTo: ctaContainerView.topAnchor),
+            ctaButton.bottomAnchor.constraint(equalTo: ctaContainerView.bottomAnchor)
         ])
     }
 

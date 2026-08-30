@@ -8,6 +8,8 @@ struct SDKDeviceReportRequest: Encodable, Sendable {
     let device: DeviceInfo
     let sdkStatus: String
     let blockReason: String
+    private let capturedBatteryLevel: Int
+    private let capturedIsCharging: Bool
 
     init(
         device: DeviceInfo,
@@ -17,6 +19,11 @@ struct SDKDeviceReportRequest: Encodable, Sendable {
         self.device = device
         self.sdkStatus = sdkStatus
         self.blockReason = blockReason
+        #if canImport(UIKit)
+        UIDevice.current.isBatteryMonitoringEnabled = true
+        #endif
+        self.capturedBatteryLevel = Self.readBatteryLevel()
+        self.capturedIsCharging = Self.readIsCharging()
     }
 
     enum CodingKeys: String, CodingKey {
@@ -80,11 +87,11 @@ struct SDKDeviceReportRequest: Encodable, Sendable {
             forKey: .osVersion
         )
         try container.encode(
-            batteryLevel,
+            capturedBatteryLevel,
             forKey: .batteryLevel
         )
         try container.encode(
-            isCharging,
+            capturedIsCharging,
             forKey: .isCharging
         )
     }
@@ -109,7 +116,7 @@ struct SDKDeviceReportRequest: Encodable, Sendable {
             && device.suspiciousApps.isEmpty
     }
 
-    private var batteryLevel: Int {
+    private static func readBatteryLevel() -> Int {
         #if canImport(UIKit)
         let level = UIDevice.current.batteryLevel
 
@@ -126,7 +133,7 @@ struct SDKDeviceReportRequest: Encodable, Sendable {
         #endif
     }
 
-    private var isCharging: Bool {
+    private static func readIsCharging() -> Bool {
         #if canImport(UIKit)
         switch UIDevice.current.batteryState {
         case .charging,

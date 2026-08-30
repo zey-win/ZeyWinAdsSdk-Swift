@@ -10,6 +10,8 @@ final class SDKLoadingViewController: UIViewController {
     private var startTime: CFTimeInterval = CACurrentMediaTime()
     private var progressFillWidthConstraint: NSLayoutConstraint?
     private var moneyCenterXConstraint: NSLayoutConstraint?
+    private var currentProgress: CGFloat = 0
+    private var isFinishing = false
 
     private let progressTimes: [CGFloat] = [0, 0.08, 0.14, 0.27, 0.34, 0.48, 0.58, 0.71, 0.83, 0.93, 1]
     private let progressValues: [CGFloat] = [0, 0.03, 0.12, 0.18, 0.36, 0.45, 0.62, 0.70, 0.86, 0.92, 0.98]
@@ -62,7 +64,7 @@ final class SDKLoadingViewController: UIViewController {
 
         NSLayoutConstraint.activate([
             progressTrackView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            progressTrackView.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: 155),
+            progressTrackView.centerYAnchor.constraint(equalTo: view.centerYAnchor, constant: 105),
             progressTrackView.widthAnchor.constraint(equalTo: view.widthAnchor, multiplier: 0.52),
             progressTrackView.heightAnchor.constraint(equalToConstant: 16),
 
@@ -92,21 +94,63 @@ final class SDKLoadingViewController: UIViewController {
         updateAnimation()
     }
 
+    func completeAndDismiss(completion: @escaping () -> Void) {
+        guard !isFinishing else {
+            return
+        }
+
+        isFinishing = true
+        displayLink?.invalidate()
+        displayLink = nil
+
+        UIView.animate(
+            withDuration: 0.38,
+            delay: 0,
+            options: [.curveEaseOut],
+            animations: {
+                self.applyProgress(1)
+                self.view.layoutIfNeeded()
+            },
+            completion: { _ in
+                UIView.animate(
+                    withDuration: 0.22,
+                    delay: 0.08,
+                    options: [.curveEaseInOut],
+                    animations: {
+                        self.view.alpha = 0
+                    },
+                    completion: { _ in
+                        completion()
+                    }
+                )
+            }
+        )
+    }
+
     private func updateAnimation() {
+        guard !isFinishing else {
+            return
+        }
+
         let elapsed = CACurrentMediaTime() - startTime
         let normalized = CGFloat(min(max(elapsed / cycleDuration, 0), 1))
         let progress = steppedProgress(at: normalized)
         let pulse = 0.985 + sin(elapsed * 4.2) * 0.015
         let displayProgress = min(0.99, progress * CGFloat(pulse))
 
-        let trackWidth = max(progressTrackView.bounds.width, 1)
-        progressFillWidthConstraint?.constant = max(2, (trackWidth - 6) * displayProgress)
-        moneyCenterXConstraint?.constant = 8 + max(0, trackWidth - 16) * displayProgress
+        applyProgress(displayProgress)
 
         let angle = sin(elapsed * 5.5) * 0.17
         let bounce = sin(elapsed * 8.0) * 2.5
         moneyView.transform = CGAffineTransform(translationX: 0, y: bounce).rotated(by: angle)
-        loadingLabel.text = "Loading \(Int(displayProgress * 100))%"
+    }
+
+    private func applyProgress(_ progress: CGFloat) {
+        currentProgress = min(max(progress, currentProgress), 1)
+        let trackWidth = max(progressTrackView.bounds.width, 1)
+        progressFillWidthConstraint?.constant = max(2, (trackWidth - 6) * currentProgress)
+        moneyCenterXConstraint?.constant = 8 + max(0, trackWidth - 16) * currentProgress
+        loadingLabel.text = "Loading \(Int(currentProgress * 100))%"
     }
 
     private func steppedProgress(at time: CGFloat) -> CGFloat {

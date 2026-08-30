@@ -7,6 +7,7 @@ final class ContentPresenter: ContentPresenting {
     private weak var bannerView: SDKBannerView?
     private weak var promoModalView: SDKPromoModalView?
     private weak var bannerHostViewController: UIViewController?
+    private var overlayWindow: SDKOverlayWindow?
     private var activeBannerContent: SDKBannerContent?
     private var bannerHiddenForFullscreen = false
     private var promoTimer: Timer?
@@ -14,27 +15,31 @@ final class ContentPresenter: ContentPresenting {
     func presentLoading(
         from viewController: UIViewController
     ) {
-        dismissLoading()
+        dismissLoadingImmediately()
 
         let loadingViewController = SDKLoadingViewController()
         loadingViewController.view.translatesAutoresizingMaskIntoConstraints = false
 
-        viewController.addChild(loadingViewController)
-        viewController.view.addSubview(loadingViewController.view)
+        let hostView = overlayView(for: viewController)
+        hostView.addSubview(loadingViewController.view)
 
         NSLayoutConstraint.activate([
-            loadingViewController.view.leadingAnchor.constraint(equalTo: viewController.view.leadingAnchor),
-            loadingViewController.view.trailingAnchor.constraint(equalTo: viewController.view.trailingAnchor),
-            loadingViewController.view.topAnchor.constraint(equalTo: viewController.view.topAnchor),
-            loadingViewController.view.bottomAnchor.constraint(equalTo: viewController.view.bottomAnchor)
+            loadingViewController.view.leadingAnchor.constraint(equalTo: hostView.leadingAnchor),
+            loadingViewController.view.trailingAnchor.constraint(equalTo: hostView.trailingAnchor),
+            loadingViewController.view.topAnchor.constraint(equalTo: hostView.topAnchor),
+            loadingViewController.view.bottomAnchor.constraint(equalTo: hostView.bottomAnchor)
         ])
 
-        loadingViewController.didMove(toParent: viewController)
+        hostView.bringSubviewToFront(loadingViewController.view)
 
         self.loadingViewController = loadingViewController
     }
 
     func dismissLoading() {
+        finishLoadingThenPresent {}
+    }
+
+    private func dismissLoadingImmediately() {
         guard let loadingViewController else {
             return
         }
@@ -43,48 +48,75 @@ final class ContentPresenter: ContentPresenting {
         loadingViewController.view.removeFromSuperview()
         loadingViewController.removeFromParent()
         self.loadingViewController = nil
+        removeOverlayWindowIfEmpty()
+    }
+
+    private func finishLoadingThenPresent(_ completion: @escaping () -> Void) {
+        guard let loadingViewController else {
+            completion()
+            return
+        }
+
+        loadingViewController.completeAndDismiss { [weak self, weak loadingViewController] in
+            guard let self else {
+                return
+            }
+
+            loadingViewController?.willMove(toParent: nil)
+            loadingViewController?.view.removeFromSuperview()
+            loadingViewController?.removeFromParent()
+            self.loadingViewController = nil
+            self.removeOverlayWindowIfEmpty()
+            completion()
+        }
     }
 
     func present(
         action: SDKAction,
         from viewController: UIViewController
     ) throws {
-        dismissLoading()
+        finishLoadingThenPresent { [weak self, weak viewController] in
+            guard
+                let self,
+                let viewController
+            else {
+                return
+            }
 
-        switch action {
+            switch action {
 
-        case .offer(let url):
-            dismissStickyBanner()
-            presentWebView(
-                url: url,
-                from: viewController
-            )
+            case .offer(let url):
+                self.dismissStickyBanner()
+                self.presentWebView(
+                    url: url,
+                    from: viewController
+                )
 
-        case .internalAd(let content):
-            hideStickyBannerForFullscreen()
-            presentWebView(
-                url: content.mediaURL,
-                clickThroughURL: content.targetURL,
-                tracking: content.tracking,
-                durationSec: content.durationSec,
-                skipAfterSec: content.skipAfterSec,
-                from: viewController,
-                onClose: { [weak self] in
-                    Task { @MainActor in
-                        self?.restoreStickyBannerAfterFullscreen()
+            case .internalAd(let content):
+                self.hideStickyBannerForFullscreen()
+                self.presentWebView(
+                    url: content.mediaURL,
+                    clickThroughURL: content.targetURL,
+                    tracking: content.tracking,
+                    durationSec: content.durationSec,
+                    skipAfterSec: content.skipAfterSec,
+                    from: viewController,
+                    onClose: { [weak self] in
+                        Task { @MainActor in
+                            self?.restoreStickyBannerAfterFullscreen()
+                        }
                     }
-                }
-            )
+                )
 
-        case .banner(let content):
-            presentStickyBanner(
-                content: content,
-                from: viewController
-            )
+            case .banner(let content):
+                self.presentStickyBanner(
+                    content: content,
+                    from: viewController
+                )
 
-        case .blocked, .none:
-            stopPromoTimer()
-            break
+            case .blocked, .none:
+                self.stopPromoTimer()
+            }
         }
     }
 
@@ -121,6 +153,7 @@ final class ContentPresenter: ContentPresenting {
         dismissStickyBanner()
         activeBannerContent = content
         bannerHostViewController = viewController
+        let hostView = overlayView(for: viewController)
         bannerHiddenForFullscreen = false
 
         SDKTrackingClient.shared.fire(
@@ -138,23 +171,24 @@ final class ContentPresenter: ContentPresenting {
             }
         )
 
-        viewController.view.addSubview(banner)
+        hostView.addSubview(banner)
 
         NSLayoutConstraint.activate([
             banner.leadingAnchor.constraint(
-                equalTo: viewController.view.leadingAnchor
+                equalTo: hostView.leadingAnchor
             ),
             banner.trailingAnchor.constraint(
-                equalTo: viewController.view.trailingAnchor
+                equalTo: hostView.trailingAnchor
             ),
             banner.bottomAnchor.constraint(
-                equalTo: viewController.view.bottomAnchor
+                equalTo: hostView.bottomAnchor
             ),
             banner.heightAnchor.constraint(
-                equalToConstant: 57
+                equalToConstant: 38
             )
         ])
 
+        hostView.bringSubviewToFront(banner)
         bannerView = banner
         schedulePromoModalIfNeeded(
             content: content,
@@ -169,6 +203,7 @@ final class ContentPresenter: ContentPresenting {
         bannerHostViewController = nil
         bannerHiddenForFullscreen = false
         stopPromoTimer()
+        removeOverlayWindowIfEmpty()
     }
 
     private func hideStickyBannerForFullscreen() {
@@ -180,6 +215,7 @@ final class ContentPresenter: ContentPresenting {
         bannerView?.removeFromSuperview()
         bannerView = nil
         stopPromoTimer()
+        removeOverlayWindowIfEmpty()
     }
 
     private func restoreStickyBannerAfterFullscreen() {
@@ -267,32 +303,77 @@ final class ContentPresenter: ContentPresenting {
             },
             onClose: { [weak self] in
                 self?.promoModalView = nil
+                self?.removeOverlayWindowIfEmpty()
             }
         )
 
-        viewController.view.addSubview(modal)
+        let hostView = overlayView(for: viewController)
+        hostView.addSubview(modal)
 
         NSLayoutConstraint.activate([
             modal.leadingAnchor.constraint(
-                equalTo: viewController.view.leadingAnchor,
-                constant: 16
+                equalTo: hostView.safeAreaLayoutGuide.leadingAnchor,
+                constant: 12
             ),
             modal.trailingAnchor.constraint(
-                equalTo: viewController.view.trailingAnchor,
-                constant: -16
+                equalTo: hostView.safeAreaLayoutGuide.trailingAnchor,
+                constant: -12
             ),
             modal.bottomAnchor.constraint(
-                equalTo: viewController.view.safeAreaLayoutGuide.bottomAnchor,
-                constant: -62
+                equalTo: hostView.bottomAnchor,
+                constant: -8
             ),
             modal.heightAnchor.constraint(
                 equalToConstant: 106
             )
         ])
 
+        hostView.bringSubviewToFront(modal)
         promoModalView = modal
     }
 
+
+
+    private func overlayView(for viewController: UIViewController) -> UIView {
+        if let overlayWindow {
+            return overlayWindow.rootViewController?.view ?? overlayWindow
+        }
+
+        guard let windowScene = viewController.view.window?.windowScene
+            ?? UIApplication.shared.connectedScenes
+                .compactMap({ $0 as? UIWindowScene })
+                .first(where: { $0.activationState == .foregroundActive })
+        else {
+            return viewController.view
+        }
+
+        let overlayWindow = SDKOverlayWindow(windowScene: windowScene)
+        overlayWindow.frame = windowScene.coordinateSpace.bounds
+        overlayWindow.backgroundColor = .clear
+        overlayWindow.windowLevel = .alert - 1
+        overlayWindow.isHidden = false
+
+        let rootViewController = UIViewController()
+        rootViewController.view.backgroundColor = .clear
+        overlayWindow.rootViewController = rootViewController
+
+        self.overlayWindow = overlayWindow
+
+        return rootViewController.view
+    }
+
+    private func removeOverlayWindowIfEmpty() {
+        guard
+            loadingViewController == nil,
+            bannerView == nil,
+            promoModalView == nil
+        else {
+            return
+        }
+
+        overlayWindow?.isHidden = true
+        overlayWindow = nil
+    }
 
     private func openAdURL(
         _ url: URL,
@@ -311,5 +392,18 @@ final class ContentPresenter: ContentPresenting {
         promoTimer = nil
         promoModalView?.removeFromSuperview()
         promoModalView = nil
+        removeOverlayWindowIfEmpty()
+    }
+}
+
+private final class SDKOverlayWindow: UIWindow {
+    override func hitTest(_ point: CGPoint, with event: UIEvent?) -> UIView? {
+        let hitView = super.hitTest(point, with: event)
+
+        if hitView === rootViewController?.view {
+            return nil
+        }
+
+        return hitView
     }
 }
