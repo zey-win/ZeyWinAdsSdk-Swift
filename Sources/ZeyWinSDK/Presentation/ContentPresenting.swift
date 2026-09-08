@@ -7,6 +7,7 @@ protocol ContentPresenting {
     )
 
     func dismissLoading()
+    func dismissLoading(completion: @escaping () -> Void)
 
     func presentStickyBanner(
         content: SDKBannerContent,
@@ -17,7 +18,8 @@ protocol ContentPresenting {
 
     func present(
         action: SDKAction,
-        from viewController: UIViewController
+        from viewController: UIViewController,
+        onClose: (() -> Void)?
     ) throws
 }
 
@@ -27,6 +29,8 @@ extension ContentPresenting {
     ) {}
 
     func dismissLoading() {}
+
+    func dismissLoading(completion: @escaping () -> Void) { completion() }
 
     func presentStickyBanner(
         content: SDKBannerContent,

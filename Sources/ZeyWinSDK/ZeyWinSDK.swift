@@ -6,6 +6,8 @@ public final class ZeyWinSDK {
     public static let shared = ZeyWinSDK()
 
     public private(set) var state: SDKState = .idle
+    public private(set) var isOfferPresented = false
+    public private(set) var isLoadingPresented = false
 
     private var configuration: SDKConfiguration?
     private var apiClient: APIClientProtocol?
@@ -23,6 +25,71 @@ public final class ZeyWinSDK {
         self.deviceInfoProvider = deviceInfoProvider
         self.resolver = resolver
         self.presenter = presenter ?? ContentPresenter()
+    }
+
+    private func dismissLoading() {
+        isLoadingPresented = false
+        presenter.dismissLoading()
+    }
+
+    private func dismissLoading(completion: @escaping () -> Void) {
+        presenter.dismissLoading { [weak self] in
+            self?.isLoadingPresented = false
+            completion()
+        }
+    }
+
+    private func presentAction(
+        action: SDKAction,
+        from viewController: UIViewController
+    ) throws {
+        isLoadingPresented = false
+
+        let isOffer: Bool
+        if case .offer = action {
+            isOffer = true
+        } else {
+            isOffer = false
+        }
+
+        if isOffer {
+            isOfferPresented = true
+            updateOrientation(for: viewController)
+        }
+
+        do {
+            if isOffer {
+                try presenter.present(
+                    action: action,
+                    from: viewController,
+                    onClose: { [weak self, weak viewController] in
+                        self?.isOfferPresented = false
+                        if let viewController {
+                            self?.updateOrientation(for: viewController)
+                        }
+                    }
+                )
+            } else {
+                try presenter.present(
+                    action: action,
+                    from: viewController,
+                    onClose: nil
+                )
+            }
+        } catch {
+            if isOffer {
+                isOfferPresented = false
+                updateOrientation(for: viewController)
+            }
+            throw error
+        }
+    }
+
+    private func updateOrientation(for viewController: UIViewController) {
+        if #available(iOS 16.0, *) {
+            viewController.setNeedsUpdateOfSupportedInterfaceOrientations()
+            viewController.view.window?.rootViewController?.setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
     }
 
     public func initialize(
@@ -105,6 +172,7 @@ public final class ZeyWinSDK {
             )
         }
 
+        isLoadingPresented = true
         presenter.presentLoading(
             from: viewController
         )
@@ -135,7 +203,7 @@ public final class ZeyWinSDK {
             ) {
                 state = .presenting
 
-                try presenter.present(
+                try presentAction(
                     action: referralAction.action,
                     from: viewController
                 )
@@ -165,7 +233,7 @@ public final class ZeyWinSDK {
                 )
 
                 if reportResponse.sdkStatus == "blocked" {
-                    presenter.dismissLoading()
+                    dismissLoading()
                     state = .ready
 
                     return .success(
@@ -178,7 +246,7 @@ public final class ZeyWinSDK {
                 )
 
                 if localReport.sdkStatus == "blocked" {
-                    presenter.dismissLoading()
+                    dismissLoading()
                     state = .ready
 
                     return .success(
@@ -197,17 +265,23 @@ public final class ZeyWinSDK {
                 apiClient: apiClient,
                 deviceInfo: deviceInfo
             ) {
-                presenter.dismissLoading()
-                presenter.presentStickyBanner(
-                    content: stickyBanner,
-                    from: viewController
-                )
-                scheduleFullscreenAds(
-                    configuration: configuration,
-                    apiClient: apiClient,
-                    deviceInfo: deviceInfo,
-                    from: viewController
-                )
+                dismissLoading { [weak self] in
+                    guard let self else { return }
+
+                    self.presenter.dismissStickyBanner()
+
+                    self.presenter.presentStickyBanner(
+                        content: stickyBanner,
+                        from: viewController
+                    )
+
+                    self.scheduleFullscreenAds(
+                        configuration: configuration,
+                        apiClient: apiClient,
+                        deviceInfo: deviceInfo,
+                        from: viewController
+                    )
+                }
 
                 state = .ready
 
@@ -243,7 +317,7 @@ public final class ZeyWinSDK {
                     "Backend verdict: none"
                 )
 
-                presenter.dismissLoading()
+                dismissLoading()
                 state = .ready
 
                 return .success(
@@ -255,7 +329,7 @@ public final class ZeyWinSDK {
                     "Backend verdict: blocked(\(reason ?? "unknown"))"
                 )
 
-                presenter.dismissLoading()
+                dismissLoading()
                 state = .ready
 
                 return .success(
@@ -268,7 +342,7 @@ public final class ZeyWinSDK {
 
                 state = .presenting
 
-                try presenter.present(
+                try presentAction(
                     action: action,
                     from: viewController
                 )
@@ -281,7 +355,7 @@ public final class ZeyWinSDK {
             }
 
         } catch let error as SDKError {
-            presenter.dismissLoading()
+            dismissLoading()
 
             SDKLogger.log(
                 "SDK failed: \(error.localizedDescription)"
@@ -296,7 +370,7 @@ public final class ZeyWinSDK {
             )
 
         } catch {
-            presenter.dismissLoading()
+            dismissLoading()
 
             let sdkError = SDKError.unknown(
                 error
@@ -376,7 +450,7 @@ public final class ZeyWinSDK {
                 return .success(action)
             }
 
-            try presenter.present(
+            try presentAction(
                 action: action,
                 from: viewController
             )
@@ -395,7 +469,8 @@ public final class ZeyWinSDK {
         fullscreenAdTimer?.invalidate()
         fullscreenAdTimer = nil
         presenter.dismissStickyBanner()
-        presenter.dismissLoading()
+        dismissLoading()
+        isOfferPresented = false
         state = .idle
 
         SDKLogger.log(
@@ -601,7 +676,7 @@ public final class ZeyWinSDK {
                 return
             }
 
-            try presenter.present(
+            try presentAction(
                 action: action,
                 from: viewController
             )

@@ -5,13 +5,25 @@ import WebKit
 @MainActor
 final class SDKWebViewController: UIViewController {
 
+    private let orientationMask: UIInterfaceOrientationMask
+
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        orientationMask
+    }
+
+    override var shouldAutorotate: Bool {
+        true
+    }
+
     private let url: URL
     private let clickThroughURL: URL?
     private let tracking: SDKAdTracking?
     private let durationSec: Int?
     private let skipAfterSec: Int?
     private let onClose: (() -> Void)?
+    private let onReady: (() -> Void)?
     private var didNotifyClose = false
+    private var didNotifyReady = false
     private var didSendClickTracking = false
     private var didSendShownTracking = false
     private var didSendFailedTracking = false
@@ -51,14 +63,18 @@ final class SDKWebViewController: UIViewController {
         tracking: SDKAdTracking?,
         durationSec: Int? = nil,
         skipAfterSec: Int? = nil,
-        onClose: (() -> Void)? = nil
+        orientationMask: UIInterfaceOrientationMask = .landscape,
+        onClose: (() -> Void)? = nil,
+        onReady: (() -> Void)? = nil
     ) {
         self.url = url
         self.clickThroughURL = clickThroughURL
         self.tracking = tracking
         self.durationSec = durationSec
         self.skipAfterSec = skipAfterSec
+        self.orientationMask = orientationMask
         self.onClose = onClose
+        self.onReady = onReady
         super.init(
             nibName: nil,
             bundle: nil
@@ -94,6 +110,11 @@ final class SDKWebViewController: UIViewController {
     }
 
 
+    override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        notifyCloseIfNeeded()
+    }
+
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         player?.pause()
@@ -114,8 +135,10 @@ final class SDKWebViewController: UIViewController {
         webView.isOpaque = false
         webView.backgroundColor = .black
         webView.scrollView.backgroundColor = .black
-        webView.scrollView.isScrollEnabled = false
         webView.scrollView.bounces = false
+        webView.scrollView.alwaysBounceVertical = false
+        webView.scrollView.alwaysBounceHorizontal = false
+        webView.scrollView.isScrollEnabled = false
 
         view.addSubview(webView)
 
@@ -233,22 +256,29 @@ final class SDKWebViewController: UIViewController {
     private func setupWebView() {
         webView.navigationDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
+        webView.allowsBackForwardNavigationGestures = true
+        webView.isOpaque = false
+        webView.backgroundColor = .black
+        webView.scrollView.backgroundColor = .black
+        webView.scrollView.bounces = false
+        webView.scrollView.alwaysBounceVertical = false
+        webView.scrollView.alwaysBounceHorizontal = false
 
         view.addSubview(webView)
 
         NSLayoutConstraint.activate(
             [
                 webView.topAnchor.constraint(
-                    equalTo: view.topAnchor
+                    equalTo: view.safeAreaLayoutGuide.topAnchor
                 ),
                 webView.leadingAnchor.constraint(
-                    equalTo: view.leadingAnchor
+                    equalTo: view.safeAreaLayoutGuide.leadingAnchor
                 ),
                 webView.trailingAnchor.constraint(
-                    equalTo: view.trailingAnchor
+                    equalTo: view.safeAreaLayoutGuide.trailingAnchor
                 ),
                 webView.bottomAnchor.constraint(
-                    equalTo: view.bottomAnchor
+                    equalTo: view.safeAreaLayoutGuide.bottomAnchor
                 )
             ]
         )
@@ -561,6 +591,7 @@ extension SDKWebViewController: WKNavigationDelegate {
         didFinish navigation: WKNavigation?
     ) {
         if !isDirectVideoURL(url) {
+            notifyReadyIfNeeded()
             trackWebViewShownIfNeeded()
         }
     }
@@ -603,6 +634,7 @@ extension SDKWebViewController: WKNavigationDelegate {
 
         switch url?.host {
         case "webview-shown":
+            notifyReadyIfNeeded()
             trackWebViewShownIfNeeded()
 
         case "webview-failed":
@@ -628,6 +660,7 @@ extension SDKWebViewController: WKNavigationDelegate {
         withError error: Error
     ) {
         if isPluginHandledLoadError(error) {
+            notifyReadyIfNeeded()
             trackWebViewShownIfNeeded()
             return
         }
@@ -647,6 +680,7 @@ extension SDKWebViewController: WKNavigationDelegate {
         withError error: Error
     ) {
         if isPluginHandledLoadError(error) {
+            notifyReadyIfNeeded()
             trackWebViewShownIfNeeded()
             return
         }
@@ -670,6 +704,7 @@ extension SDKWebViewController: WKNavigationDelegate {
             return
         }
 
+        notifyReadyIfNeeded()
         didSendFailedTracking = true
         SDKTrackingClient.shared.trackWebView(
             tracking,
@@ -697,6 +732,15 @@ extension SDKWebViewController: WKNavigationDelegate {
 
         return nsError.domain == "WebKitErrorDomain"
             && nsError.code == 204
+    }
+
+    private func notifyReadyIfNeeded() {
+        guard !didNotifyReady else {
+            return
+        }
+
+        didNotifyReady = true
+        onReady?()
     }
 
     private func notifyCloseIfNeeded() {

@@ -3,7 +3,7 @@ import UIKit
 @MainActor
 final class ContentPresenter: ContentPresenting {
 
-    private weak var loadingViewController: SDKLoadingViewController?
+    private var loadingViewController: SDKLoadingViewController?
     private weak var bannerView: SDKBannerView?
     private weak var promoModalView: SDKPromoModalView?
     private weak var bannerHostViewController: UIViewController?
@@ -19,8 +19,10 @@ final class ContentPresenter: ContentPresenting {
 
         let loadingViewController = SDKLoadingViewController()
         loadingViewController.view.translatesAutoresizingMaskIntoConstraints = false
+        loadingViewController.view.isOpaque = true
+        loadingViewController.view.alpha = 1
 
-        let hostView = overlayView(for: viewController)
+        let hostView = overlayView(for: viewController, orientationMask: .all)
         hostView.addSubview(loadingViewController.view)
 
         NSLayoutConstraint.activate([
@@ -36,7 +38,11 @@ final class ContentPresenter: ContentPresenting {
     }
 
     func dismissLoading() {
-        finishLoadingThenPresent {}
+        dismissLoading {}
+    }
+
+    func dismissLoading(completion: @escaping () -> Void) {
+        finishLoadingThenPresent(completion)
     }
 
     private func dismissLoadingImmediately() {
@@ -73,8 +79,23 @@ final class ContentPresenter: ContentPresenting {
 
     func present(
         action: SDKAction,
-        from viewController: UIViewController
+        from viewController: UIViewController,
+        onClose: (() -> Void)?
     ) throws {
+        if case .offer(let url) = action {
+            dismissStickyBanner()
+            presentWebView(
+                url: url,
+                from: viewController,
+                orientationMask: .all,
+                onClose: onClose,
+                onReady: { [weak self] in
+                    self?.finishLoadingThenPresent {}
+                }
+            )
+            return
+        }
+
         finishLoadingThenPresent { [weak self, weak viewController] in
             guard
                 let self,
@@ -84,14 +105,6 @@ final class ContentPresenter: ContentPresenting {
             }
 
             switch action {
-
-            case .offer(let url):
-                self.dismissStickyBanner()
-                self.presentWebView(
-                    url: url,
-                    from: viewController
-                )
-
             case .internalAd(let content):
                 self.hideStickyBannerForFullscreen()
                 self.presentWebView(
@@ -101,10 +114,9 @@ final class ContentPresenter: ContentPresenting {
                     durationSec: content.durationSec,
                     skipAfterSec: content.skipAfterSec,
                     from: viewController,
+                    orientationMask: .landscape,
                     onClose: { [weak self] in
-                        Task { @MainActor in
-                            self?.restoreStickyBannerAfterFullscreen()
-                        }
+                        self?.restoreStickyBannerAfterFullscreen()
                     }
                 )
 
@@ -116,6 +128,9 @@ final class ContentPresenter: ContentPresenting {
 
             case .blocked, .none:
                 self.stopPromoTimer()
+
+            case .offer:
+                break
             }
         }
     }
@@ -127,7 +142,9 @@ final class ContentPresenter: ContentPresenting {
         durationSec: Int? = nil,
         skipAfterSec: Int? = nil,
         from viewController: UIViewController,
-        onClose: (() -> Void)? = nil
+        orientationMask: UIInterfaceOrientationMask = .landscape,
+        onClose: (() -> Void)? = nil,
+        onReady: (() -> Void)? = nil
     ) {
         let webViewController = SDKWebViewController(
             url: url,
@@ -135,14 +152,16 @@ final class ContentPresenter: ContentPresenting {
             tracking: tracking ?? SDKTrackingRegistry.shared.tracking(for: url),
             durationSec: durationSec,
             skipAfterSec: skipAfterSec,
-            onClose: onClose
+            orientationMask: orientationMask,
+            onClose: onClose,
+            onReady: onReady
         )
 
         webViewController.modalPresentationStyle = .fullScreen
 
         viewController.present(
             webViewController,
-            animated: true
+            animated: onReady == nil
         )
     }
 
@@ -153,7 +172,7 @@ final class ContentPresenter: ContentPresenting {
         dismissStickyBanner()
         activeBannerContent = content
         bannerHostViewController = viewController
-        let hostView = overlayView(for: viewController)
+        let hostView = overlayView(for: viewController, orientationMask: .landscape)
         bannerHiddenForFullscreen = false
 
         SDKTrackingClient.shared.fire(
@@ -307,7 +326,7 @@ final class ContentPresenter: ContentPresenting {
             }
         )
 
-        let hostView = overlayView(for: viewController)
+        let hostView = overlayView(for: viewController, orientationMask: .landscape)
         hostView.addSubview(modal)
 
         NSLayoutConstraint.activate([
@@ -334,8 +353,13 @@ final class ContentPresenter: ContentPresenting {
 
 
 
-    private func overlayView(for viewController: UIViewController) -> UIView {
+    private func overlayView(for viewController: UIViewController, orientationMask: UIInterfaceOrientationMask) -> UIView {
         if let overlayWindow {
+            if let rootViewController = overlayWindow.rootViewController as? SDKOverlayViewController {
+                rootViewController.updateOrientationMask(orientationMask)
+                return rootViewController.view
+            }
+
             return overlayWindow.rootViewController?.view ?? overlayWindow
         }
 
@@ -353,8 +377,7 @@ final class ContentPresenter: ContentPresenting {
         overlayWindow.windowLevel = .alert - 1
         overlayWindow.isHidden = false
 
-        let rootViewController = UIViewController()
-        rootViewController.view.backgroundColor = .clear
+        let rootViewController = SDKOverlayViewController(orientationMask: orientationMask)
         overlayWindow.rootViewController = rootViewController
 
         self.overlayWindow = overlayWindow
@@ -393,6 +416,35 @@ final class ContentPresenter: ContentPresenting {
         promoModalView?.removeFromSuperview()
         promoModalView = nil
         removeOverlayWindowIfEmpty()
+    }
+}
+
+private final class SDKOverlayViewController: UIViewController {
+    private var orientationMask: UIInterfaceOrientationMask
+
+    init(orientationMask: UIInterfaceOrientationMask) {
+        self.orientationMask = orientationMask
+        super.init(nibName: nil, bundle: nil)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
+        orientationMask
+    }
+
+    override var shouldAutorotate: Bool {
+        true
+    }
+
+    func updateOrientationMask(_ orientationMask: UIInterfaceOrientationMask) {
+        self.orientationMask = orientationMask
+        if #available(iOS 16.0, *) {
+            setNeedsUpdateOfSupportedInterfaceOrientations()
+        }
     }
 }
 

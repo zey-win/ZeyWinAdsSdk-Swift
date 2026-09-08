@@ -16,7 +16,7 @@ let package = Package(
     targets: [
         .target(
             name: "ZeyWinSDK",
-            dependencies: []
+            dependencies: [],
         ),
         .testTarget(
             name: "ZeyWinSDKTests",
