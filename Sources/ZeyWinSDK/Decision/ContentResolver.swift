@@ -2,8 +2,17 @@ import Foundation
 
 final class ContentResolver: ContentResolving {
 
+    private let promotionURLStore: PromotionURLStore
+
+    init(
+        promotionURLStore: PromotionURLStore = PromotionURLStore()
+    ) {
+        self.promotionURLStore = promotionURLStore
+    }
+
     func resolve(
-        response: SDKInitResponse
+        response: SDKInitResponse,
+        promotionScope: PromotionURLScope? = nil
     ) throws -> SDKAction {
 
         if let adType = response.adType {
@@ -17,7 +26,8 @@ final class ContentResolver: ContentResolving {
 
         case "offer":
             let url = try resolvePrimaryURL(
-                response: response
+                response: response,
+                promotionScope: promotionScope
             )
 
             registerTracking(
@@ -244,17 +254,26 @@ final class ContentResolver: ContentResolving {
     }
 
     private func resolvePrimaryURL(
-        response: SDKInitResponse
+        response: SDKInitResponse,
+        promotionScope: PromotionURLScope?
     ) throws -> URL {
         let value = response.clickURL
             ?? response.storeURL
             ?? response.url
             ?? response.mediaURL
 
-        guard
-            let value,
-            let url = URL(string: value)
-        else {
+        let url: URL?
+
+        if let promotionScope {
+            url = promotionURLStore.resolve(
+                candidate: value,
+                for: promotionScope
+            )
+        } else {
+            url = PromotionURLStore.validURL(value)
+        }
+
+        guard let url else {
             throw SDKError.invalidURL
         }
 
