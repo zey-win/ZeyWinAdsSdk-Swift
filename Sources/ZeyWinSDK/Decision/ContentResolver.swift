@@ -30,6 +30,7 @@ final class ContentResolver: ContentResolving {
         case "internal_ad":
             let content = SDKFullscreenAdContent(
                 mediaURL: try resolveCreativeURL(response: response),
+                mediaType: response.mediaType,
                 targetURL: resolveOptionalDestinationURL(response: response),
                 durationSec: response.durationSec,
                 skipAfterSec: response.skipAfterSec,
@@ -89,6 +90,7 @@ final class ContentResolver: ContentResolving {
 
             let content = SDKFullscreenAdContent(
                 mediaURL: try resolveCreativeURL(response: response),
+                mediaType: response.mediaType,
                 targetURL: resolveOptionalDestinationURL(response: response),
                 durationSec: response.durationSec,
                 skipAfterSec: response.skipAfterSec,
@@ -280,33 +282,46 @@ final class ContentResolver: ContentResolving {
     private func resolveDestinationURL(
         response: SDKInitResponse
     ) throws -> URL {
-        let value = response.storeURL
-            ?? response.clickURL
-            ?? response.url
-            ?? response.mediaURL
-
-        guard
-            let value,
-            let url = URL(string: value)
-        else {
-            throw SDKError.invalidURL
+        if let url = validDestinationURL(response.clickURL) {
+            return url
         }
 
-        return url
+        if let url = validDestinationURL(response.storeURL) {
+            return url
+        }
+
+        if let url = validDestinationURL(response.url) {
+            return url
+        }
+
+        if let url = validDestinationURL(response.mediaURL) {
+            return url
+        }
+
+        throw SDKError.invalidURL
     }
 
     private func resolveOptionalDestinationURL(
         response: SDKInitResponse
     ) -> URL? {
-        let value = response.storeURL
-            ?? response.clickURL
-            ?? response.url
+        validDestinationURL(response.clickURL)
+            ?? validDestinationURL(response.storeURL)
+            ?? validDestinationURL(response.url)
+    }
 
-        guard let value else {
+    private func validDestinationURL(_ value: String?) -> URL? {
+        guard
+            let value,
+            let url = URL(string: value),
+            let scheme = url.scheme,
+            !scheme.isEmpty,
+            let host = url.host,
+            !host.isEmpty
+        else {
             return nil
         }
 
-        return URL(string: value)
+        return url
     }
 
     private func makeTracking(

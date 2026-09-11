@@ -121,7 +121,7 @@ final class ContentResolverTests: XCTestCase {
         )
     }
 
-    func testUnityBannerResponsePrefersStoreURLForCrossPromo() throws {
+    func testUnityBannerResponsePrefersClickURLOverStoreURL() throws {
         let response = SDKInitResponse(
             action: "banner",
             adType: .banner,
@@ -139,7 +139,7 @@ final class ContentResolverTests: XCTestCase {
             .banner(
                 SDKBannerContent(
                     title: "Install",
-                    targetURL: URL(string: "https://apps.apple.com/app/id123")!,
+                    targetURL: URL(string: "https://example.com/offer")!,
                     ctaText: "Install"
                 )
             )

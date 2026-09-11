@@ -17,6 +17,7 @@ final class SDKWebViewController: UIViewController {
 
     private let url: URL
     private let clickThroughURL: URL?
+    private let mediaType: String?
     private let tracking: SDKAdTracking?
     private let durationSec: Int?
     private let skipAfterSec: Int?
@@ -36,6 +37,11 @@ final class SDKWebViewController: UIViewController {
     private var playerStatusObservation: NSKeyValueObservation?
     private var videoProgressTimer: Timer?
     private var videoStartTime: CFTimeInterval = 0
+    private var didActivateVideoAudioSession = false
+    private var nativeVideoFallbackTimer: Timer?
+    private var isUsingNativeVideoPlayer = false
+    private var didLoadInlineVideoHTML = false
+    private var isUsingInlineVideoWebView = false
 
     private let playerView = SDKVideoPlayerView()
     private let countdownLabel: UILabel = {
@@ -60,6 +66,7 @@ final class SDKWebViewController: UIViewController {
     init(
         url: URL,
         clickThroughURL: URL? = nil,
+        mediaType: String? = nil,
         tracking: SDKAdTracking?,
         durationSec: Int? = nil,
         skipAfterSec: Int? = nil,
@@ -69,6 +76,7 @@ final class SDKWebViewController: UIViewController {
     ) {
         self.url = url
         self.clickThroughURL = clickThroughURL
+        self.mediaType = mediaType
         self.tracking = tracking
         self.durationSec = durationSec
         self.skipAfterSec = skipAfterSec
@@ -92,7 +100,12 @@ final class SDKWebViewController: UIViewController {
         view.backgroundColor = .black
 
         if isDirectVideoURL(url) {
-            setupInlineVideoWebView()
+            if supportsNativeVideoPlayback(url) {
+                setupNativeVideoPlayer()
+            } else {
+                activateVideoAudioSession()
+                setupInlineVideoWebView()
+            }
             setupClickOverlayIfNeeded()
             setupVideoCountdown()
             startVideoProgressTimer()
@@ -110,6 +123,30 @@ final class SDKWebViewController: UIViewController {
     }
 
 
+    override func viewDidAppear(_ animated: Bool) {
+        super.viewDidAppear(animated)
+        view.layoutIfNeeded()
+        playerView.setNeedsLayout()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        playerView.playerLayer.frame = playerView.bounds
+        loadInlineVideoHTMLIfNeeded()
+    }
+
+    override func viewWillTransition(
+        to size: CGSize,
+        with coordinator: UIViewControllerTransitionCoordinator
+    ) {
+        super.viewWillTransition(to: size, with: coordinator)
+        coordinator.animate(alongsideTransition: { [weak self] _ in
+            guard let self else { return }
+            self.view.layoutIfNeeded()
+            self.playerView.playerLayer.frame = self.playerView.bounds
+        })
+    }
+
     override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         notifyCloseIfNeeded()
@@ -118,6 +155,9 @@ final class SDKWebViewController: UIViewController {
     override func viewDidDisappear(_ animated: Bool) {
         super.viewDidDisappear(animated)
         player?.pause()
+        nativeVideoFallbackTimer?.invalidate()
+        nativeVideoFallbackTimer = nil
+        deactivateVideoAudioSession()
         closeTimer?.invalidate()
         videoProgressTimer?.invalidate()
         removePlaybackObservers()
@@ -125,11 +165,37 @@ final class SDKWebViewController: UIViewController {
     }
 
     deinit {
+        nativeVideoFallbackTimer?.invalidate()
         closeTimer?.invalidate()
         videoProgressTimer?.invalidate()
     }
 
+    private func activateVideoAudioSession() {
+        let audioSession = AVAudioSession.sharedInstance()
+
+        do {
+            try audioSession.setCategory(.playback, mode: .moviePlayback, options: [])
+            try audioSession.setActive(true)
+            didActivateVideoAudioSession = true
+        } catch {
+            SDKLogger.log("Video audio session failed: \(error.localizedDescription)")
+        }
+    }
+
+    private func deactivateVideoAudioSession() {
+        guard didActivateVideoAudioSession else {
+            return
+        }
+
+        try? AVAudioSession.sharedInstance().setActive(
+            false,
+            options: .notifyOthersOnDeactivation
+        )
+        didActivateVideoAudioSession = false
+    }
+
     private func setupInlineVideoWebView() {
+        isUsingInlineVideoWebView = true
         webView.navigationDelegate = self
         webView.translatesAutoresizingMaskIntoConstraints = false
         webView.isOpaque = false
@@ -139,6 +205,9 @@ final class SDKWebViewController: UIViewController {
         webView.scrollView.alwaysBounceVertical = false
         webView.scrollView.alwaysBounceHorizontal = false
         webView.scrollView.isScrollEnabled = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.contentInset = .zero
+        webView.scrollView.contentOffset = .zero
 
         view.addSubview(webView)
 
@@ -149,10 +218,51 @@ final class SDKWebViewController: UIViewController {
             webView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
+        // HTML is intentionally NOT loaded here. On a real device this view
+        // controller is created while the interface is still rotating into
+        // its final landscape size, so webView.bounds at this point can be
+        // a stale/intermediate frame. WebKit lays out the document against
+        // whatever size it sees at load time and does not always re-flow it
+        // once the real frame lands, which is what produced the visible gap
+        // on the right/bottom. Loading is deferred to
+        // loadInlineVideoHTMLIfNeeded(), called from viewDidLayoutSubviews(),
+        // once webView has a real, non-zero bounds.
+    }
+
+    private func loadInlineVideoHTMLIfNeeded() {
+        guard
+            isUsingInlineVideoWebView,
+            !didLoadInlineVideoHTML,
+            webView.superview != nil,
+            webView.bounds.width > 0,
+            webView.bounds.height > 0
+        else {
+            return
+        }
+
+        didLoadInlineVideoHTML = true
         webView.loadHTMLString(
             makeInlineVideoHTML(for: url),
             baseURL: url.deletingLastPathComponent()
         )
+
+        // Native playback can fall back to this WebView after the click layer
+        // has already been installed. Keep the video controls above the new view.
+        bringVideoControlsToFront()
+    }
+
+    private func bringVideoControlsToFront() {
+        if clickOverlay.superview != nil {
+            view.bringSubviewToFront(clickOverlay)
+        }
+
+        if countdownLabel.superview != nil {
+            view.bringSubviewToFront(countdownLabel)
+        }
+
+        if closeButton.superview != nil {
+            view.bringSubviewToFront(closeButton)
+        }
     }
 
     private func makeInlineVideoHTML(for videoURL: URL) -> String {
@@ -167,12 +277,13 @@ final class SDKWebViewController: UIViewController {
           <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
           <style>
             html, body { margin: 0; padding: 0; width: 100%; height: 100%; overflow: hidden; background: #000; }
-            video { position: fixed; inset: 0; width: 100vw; height: 100vh; object-fit: cover; object-position: center center; background: #000; pointer-events: none; }
+            body { position: fixed; inset: 0; }
+            video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; object-position: center center; background: #000; pointer-events: none; }
             * { -webkit-user-select: none; -webkit-touch-callout: none; user-select: none; }
           </style>
         </head>
         <body>
-          <video id="adVideo" autoplay muted playsinline webkit-playsinline preload="auto" disablepictureinpicture controlslist="nodownload nofullscreen noremoteplayback">
+          <video id="adVideo" autoplay playsinline webkit-playsinline preload="auto" disablepictureinpicture controlslist="nodownload nofullscreen noremoteplayback">
             <source src="\(source)">
           </video>
           <script>
@@ -181,6 +292,8 @@ final class SDKWebViewController: UIViewController {
             function notify(name) { window.location.href = 'zeywin-sdk://' + name; }
             function markShown() { if (!shown) { shown = true; notify('webview-shown'); } }
             video.controls = false;
+            video.muted = false;
+            video.volume = 1;
             video.disablePictureInPicture = true;
             video.addEventListener('playing', markShown);
             video.addEventListener('canplay', function() { video.play().then(markShown).catch(function() {}); });
@@ -197,6 +310,7 @@ final class SDKWebViewController: UIViewController {
     }
 
     private func setupNativeVideoPlayer() {
+        isUsingNativeVideoPlayer = true
         playerView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(playerView)
 
@@ -207,24 +321,46 @@ final class SDKWebViewController: UIViewController {
             playerView.bottomAnchor.constraint(equalTo: view.bottomAnchor)
         ])
 
+        activateVideoAudioSession()
         let playerItem = AVPlayerItem(url: url)
         let player = AVPlayer(playerItem: playerItem)
-        player.isMuted = true
+        player.isMuted = false
+        player.volume = 1
         player.actionAtItemEnd = .pause
         player.preventsDisplaySleepDuringVideoPlayback = true
         self.player = player
         playerView.player = player
+        nativeVideoFallbackTimer = Timer.scheduledTimer(withTimeInterval: 8, repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.isUsingNativeVideoPlayer else { return }
+                guard let player = self.player else {
+                    self.fallbackToWebViewVideo()
+                    return
+                }
+
+                let status = player.currentItem?.status
+                let currentTime = player.currentTime().seconds
+                let hasStarted = currentTime.isFinite && currentTime > 0.1
+                guard status == .readyToPlay, (player.timeControlStatus == .playing || hasStarted) else {
+                    SDKLogger.log("Native video did not start in time")
+                    self.fallbackToWebViewVideo()
+                    return
+                }
+            }
+        }
 
         playerStatusObservation = playerItem.observe(\.status, options: [.new]) { [weak self] item, _ in
             Task { @MainActor in
                 switch item.status {
                 case .readyToPlay:
+                    self?.nativeVideoFallbackTimer?.invalidate()
+                    self?.nativeVideoFallbackTimer = nil
                     self?.trackWebViewShownIfNeeded()
                     self?.player?.play()
 
                 case .failed:
                     SDKLogger.log("Video playback failed: \(item.error?.localizedDescription ?? "unknown")")
-                    self?.handleNativeVideoFailure()
+                    self?.fallbackToWebViewVideo()
 
                 default:
                     break
@@ -263,6 +399,8 @@ final class SDKWebViewController: UIViewController {
         webView.scrollView.bounces = false
         webView.scrollView.alwaysBounceVertical = false
         webView.scrollView.alwaysBounceHorizontal = false
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.contentInset = .zero
 
         view.addSubview(webView)
 
@@ -286,6 +424,23 @@ final class SDKWebViewController: UIViewController {
         webView.load(
             URLRequest(url: url)
         )
+    }
+
+    private func fallbackToWebViewVideo() {
+        guard isUsingNativeVideoPlayer else {
+            handleNativeVideoFailure()
+            return
+        }
+
+        isUsingNativeVideoPlayer = false
+        nativeVideoFallbackTimer?.invalidate()
+        nativeVideoFallbackTimer = nil
+        player?.pause()
+        removePlaybackObservers()
+        player = nil
+        playerView.removeFromSuperview()
+        setupInlineVideoWebView()
+        SDKLogger.log("Falling back to WebView video player")
     }
 
     private func handleNativeVideoFailure() {
@@ -334,6 +489,8 @@ final class SDKWebViewController: UIViewController {
                 )
             ]
         )
+
+        bringVideoControlsToFront()
     }
 
 
@@ -464,14 +621,16 @@ final class SDKWebViewController: UIViewController {
 
         closeButton.isHidden = true
         closeButton.translatesAutoresizingMaskIntoConstraints = false
-        closeButton.backgroundColor = UIColor.black.withAlphaComponent(0.42)
+        closeButton.backgroundColor = .clear
         closeButton.tintColor = .white
         closeButton.layer.cornerRadius = 0
         closeButton.clipsToBounds = true
-        closeButton.setTitle("×", for: .normal)
-        closeButton.setTitleColor(.white, for: .normal)
-        closeButton.titleLabel?.font = UIFont.systemFont(ofSize: 34, weight: .light)
-        closeButton.contentEdgeInsets = UIEdgeInsets(top: 0, left: 0, bottom: 3, right: 0)
+        let closeImageConfiguration = UIImage.SymbolConfiguration(pointSize: 24, weight: .medium)
+        closeButton.setImage(
+            UIImage(systemName: "xmark", withConfiguration: closeImageConfiguration),
+            for: .normal
+        )
+        closeButton.accessibilityLabel = "Close"
         closeButton.addTarget(
             self,
             action: #selector(closeTapped),
@@ -480,8 +639,8 @@ final class SDKWebViewController: UIViewController {
 
         view.addSubview(closeButton)
         NSLayoutConstraint.activate([
-            closeButton.widthAnchor.constraint(equalToConstant: 58),
-            closeButton.heightAnchor.constraint(equalToConstant: 58),
+            closeButton.widthAnchor.constraint(equalToConstant: 44),
+            closeButton.heightAnchor.constraint(equalToConstant: 44),
             closeButton.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 12),
             closeButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -12)
         ])
@@ -520,12 +679,19 @@ final class SDKWebViewController: UIViewController {
         dismiss(animated: true)
     }
 
+    private func supportsNativeVideoPlayback(_ url: URL) -> Bool {
+        let path = url.path.lowercased()
+        return path.hasSuffix(".mp4") || path.hasSuffix(".mov") || path.hasSuffix(".m4v")
+    }
+
     private func isDirectVideoURL(
         _ url: URL
     ) -> Bool {
         let path = url.path.lowercased()
+        let declaredType = mediaType?.lowercased() ?? ""
 
-        return path.hasSuffix(".mp4")
+        return declaredType.contains("video")
+            || path.hasSuffix(".mp4")
             || path.hasSuffix(".mov")
             || path.hasSuffix(".m4v")
             || path.hasSuffix(".webm")
@@ -563,6 +729,11 @@ final class SDKWebViewController: UIViewController {
 }
 
 private final class SDKVideoPlayerView: UIView {
+
+    override func layoutSubviews() {
+        super.layoutSubviews()
+        playerLayer.frame = bounds
+    }
 
     override static var layerClass: AnyClass {
         AVPlayerLayer.self

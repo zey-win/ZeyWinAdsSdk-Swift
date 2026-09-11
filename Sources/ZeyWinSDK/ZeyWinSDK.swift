@@ -233,6 +233,21 @@ public final class ZeyWinSDK {
                 )
 
                 if reportResponse.sdkStatus == "blocked" {
+                    if let fallbackAction = await resolveBlockedFallback(
+                        configuration: configuration,
+                        apiClient: apiClient,
+                        deviceInfo: deviceInfo
+                    ) {
+                        state = .presenting
+                        try presentAction(
+                            action: fallbackAction,
+                            from: viewController
+                        )
+                        state = .ready
+
+                        return .success(fallbackAction)
+                    }
+
                     dismissLoading()
                     state = .ready
 
@@ -246,6 +261,21 @@ public final class ZeyWinSDK {
                 )
 
                 if localReport.sdkStatus == "blocked" {
+                    if let fallbackAction = await resolveBlockedFallback(
+                        configuration: configuration,
+                        apiClient: apiClient,
+                        deviceInfo: deviceInfo
+                    ) {
+                        state = .presenting
+                        try presentAction(
+                            action: fallbackAction,
+                            from: viewController
+                        )
+                        state = .ready
+
+                        return .success(fallbackAction)
+                    }
+
                     dismissLoading()
                     state = .ready
 
@@ -482,12 +512,13 @@ public final class ZeyWinSDK {
         deviceInfo: DeviceInfo
     ) -> SDKDeviceReportRequest {
         let reason: String
+        let isIOS = deviceInfo.platform.lowercased() == "ios"
 
         if deviceInfo.isJailbroken {
             reason = "root_access"
         } else if !deviceInfo.suspiciousApps.isEmpty {
             reason = "suspicious_apps"
-        } else if !deviceInfo.hasSim {
+        } else if !isIOS && !deviceInfo.hasSim {
             reason = "no_sim"
         } else if deviceInfo.isSimulator {
             reason = "review_emulator"
@@ -500,6 +531,43 @@ public final class ZeyWinSDK {
             sdkStatus: reason == "none" ? "active" : "blocked",
             blockReason: reason
         )
+    }
+
+    private func resolveBlockedFallback(
+        configuration: SDKConfiguration,
+        apiClient: APIClientProtocol,
+        deviceInfo: DeviceInfo
+    ) async -> SDKAction? {
+        for adType in [SDKAdType.interstitial, .native, .banner] {
+            do {
+                SDKLogger.log(
+                    "Requesting blocked-device fallback: \(adType.rawValue)"
+                )
+
+                let response = try await apiClient.fetchInitialConfiguration(
+                    request: SDKInitRequest(
+                        apiKey: configuration.apiKey,
+                        device: deviceInfo,
+                        adType: adType
+                    )
+                )
+
+                let action = try resolver.resolve(response: response)
+
+                switch action {
+                case .internalAd, .banner:
+                    return action
+                default:
+                    continue
+                }
+            } catch {
+                SDKLogger.log(
+                    "Blocked-device fallback unavailable: \(adType.rawValue) \(error.localizedDescription)"
+                )
+            }
+        }
+
+        return nil
     }
 
     private func auditGeoIfNeeded(

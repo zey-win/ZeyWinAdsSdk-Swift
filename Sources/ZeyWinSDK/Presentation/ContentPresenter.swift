@@ -11,7 +11,6 @@ final class ContentPresenter: ContentPresenting {
     private var activeBannerContent: SDKBannerContent?
     private var bannerHiddenForFullscreen = false
     private var promoTimer: Timer?
-
     func presentLoading(
         from viewController: UIViewController
     ) {
@@ -21,7 +20,6 @@ final class ContentPresenter: ContentPresenting {
         loadingViewController.view.translatesAutoresizingMaskIntoConstraints = false
         loadingViewController.view.isOpaque = true
         loadingViewController.view.alpha = 1
-
         let hostView = overlayView(for: viewController, orientationMask: .all)
         hostView.addSubview(loadingViewController.view)
 
@@ -109,6 +107,7 @@ final class ContentPresenter: ContentPresenting {
                 self.hideStickyBannerForFullscreen()
                 self.presentWebView(
                     url: content.mediaURL,
+                    mediaType: content.mediaType,
                     clickThroughURL: content.targetURL,
                     tracking: content.tracking,
                     durationSec: content.durationSec,
@@ -137,6 +136,7 @@ final class ContentPresenter: ContentPresenting {
 
     private func presentWebView(
         url: URL,
+        mediaType: String? = nil,
         clickThroughURL: URL? = nil,
         tracking: SDKAdTracking? = nil,
         durationSec: Int? = nil,
@@ -149,6 +149,7 @@ final class ContentPresenter: ContentPresenting {
         let webViewController = SDKWebViewController(
             url: url,
             clickThroughURL: clickThroughURL,
+            mediaType: mediaType,
             tracking: tracking ?? SDKTrackingRegistry.shared.tracking(for: url),
             durationSec: durationSec,
             skipAfterSec: skipAfterSec,
