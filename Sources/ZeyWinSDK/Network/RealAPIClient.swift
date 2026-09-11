@@ -280,10 +280,17 @@ final class RealAPIClient: APIClientProtocol {
         }
 
         do {
-            if let apiResponse = try? jsonDecoder.decode(
-                SDKAPIResponse<Response>.self,
-                from: data
-            ) {
+            let jsonObject = try JSONSerialization.jsonObject(
+                with: data
+            )
+
+            if let jsonObject = jsonObject as? [String: Any],
+               jsonObject["success"] != nil {
+                let apiResponse = try jsonDecoder.decode(
+                    SDKAPIResponse<Response>.self,
+                    from: data
+                )
+
                 guard apiResponse.success else {
                     throw SDKError.server(
                         apiResponse.error ?? "Unknown error"
@@ -306,19 +313,6 @@ final class RealAPIClient: APIClientProtocol {
                 from: data
             ) {
                 return sdkResponse
-            }
-
-            guard
-                (try? JSONSerialization.jsonObject(with: data)) != nil
-            else {
-                throw SDKError.decodingFailed(
-                    DecodingError.dataCorrupted(
-                        DecodingError.Context(
-                            codingPath: [],
-                            debugDescription: "Invalid JSON response"
-                        )
-                    )
-                )
             }
 
             if let defaultResponse {
