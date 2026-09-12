@@ -16,13 +16,15 @@ public final class ZeyWinSDK {
     private let resolver: ContentResolving
     private let presenter: ContentPresenting
     private let promotionURLStore: PromotionURLStore
+    private let apiClientFactory: ((SDKConfiguration) -> APIClientProtocol)?
     private var fullscreenAdTimer: Timer?
 
-    private init(
+    init(
         deviceInfoProvider: DeviceInfoProviding = DeviceInfoProvider(),
         resolver: ContentResolving? = nil,
         presenter: ContentPresenting? = nil,
-        promotionURLStore: PromotionURLStore = PromotionURLStore()
+        promotionURLStore: PromotionURLStore = PromotionURLStore(),
+        apiClientFactory: ((SDKConfiguration) -> APIClientProtocol)? = nil
     ) {
         self.deviceInfoProvider = deviceInfoProvider
         self.resolver = resolver ?? ContentResolver(
@@ -30,6 +32,7 @@ public final class ZeyWinSDK {
         )
         self.presenter = presenter ?? ContentPresenter()
         self.promotionURLStore = promotionURLStore
+        self.apiClientFactory = apiClientFactory
     }
 
     private func dismissLoading() {
@@ -124,16 +127,20 @@ public final class ZeyWinSDK {
 
         self.configuration = configuration
 
-        switch mode {
-        case .mock(let scenario):
-            self.apiClient = MockAPIClient(
-                scenario: scenario
-            )
+        if let apiClientFactory {
+            self.apiClient = apiClientFactory(configuration)
+        } else {
+            switch mode {
+            case .mock(let scenario):
+                self.apiClient = MockAPIClient(
+                    scenario: scenario
+                )
 
-        case .production:
-            self.apiClient = RealAPIClient(
-                configuration: productionConfiguration
-            )
+            case .production:
+                self.apiClient = RealAPIClient(
+                    configuration: productionConfiguration
+                )
+            }
         }
 
         state = .ready
