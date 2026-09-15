@@ -1,0 +1,56 @@
+name: Unity to Swift change detector
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_commit:
+        description: Optional Unity baseline override; does not update last_synced_commit
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  report:
+    name: Report Unity main changes for Swift review
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout Swift repository
+        uses: actions/checkout@v4
+
+      - name: Clone Unity main without blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --branch main \
+            https://github.com/zey-win/ZeyWinAdsSDK-Unity.git \
+            "$RUNNER_TEMP/ZeyWinAdsSDK-Unity"
+
+      - name: Generate report-only parity analysis
+        shell: bash
+        env:
+          FROM_COMMIT: ${{ inputs.from_commit }}
+        run: |
+          set -euo pipefail
+          args=(
+            --unity-dir "$RUNNER_TEMP/ZeyWinAdsSDK-Unity"
+            --output "$RUNNER_TEMP/unity-swift-change-report.md"
+          )
+
+          if [[ -n "$FROM_COMMIT" ]]; then
+            args+=(--from "$FROM_COMMIT")
+          fi
+
+          bash scripts/unity_swift_change_detector.sh "${args[@]}"
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-swift-change-report
+          path: ${{ runner.temp }}/unity-swift-change-report.md
+          if-no-files-found: warn
+          retention-days: 30
