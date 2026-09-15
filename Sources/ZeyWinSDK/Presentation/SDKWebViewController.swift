@@ -5,6 +5,15 @@ import WebKit
 @MainActor
 final class SDKWebViewController: UIViewController {
 
+    private static let externallyHandledSchemes: Set<String> = [
+        "tg",
+        "telegram",
+        "whatsapp",
+        "viber",
+        "intent",
+        "market"
+    ]
+
     private let orientationMask: UIInterfaceOrientationMask
 
     override var supportedInterfaceOrientations: UIInterfaceOrientationMask {
@@ -23,6 +32,7 @@ final class SDKWebViewController: UIViewController {
     private let skipAfterSec: Int?
     private let onClose: (() -> Void)?
     private let onReady: (() -> Void)?
+    private let externalURLHandler: @MainActor (URL) -> Void
     private var didNotifyClose = false
     private var didNotifyReady = false
     private var didSendClickTracking = false
@@ -56,7 +66,7 @@ final class SDKWebViewController: UIViewController {
         return label
     }()
 
-    private let webView = WKWebView(
+    let webView = WKWebView(
         frame: .zero,
         configuration: SDKWebViewController.makeWebViewConfiguration()
     )
@@ -72,7 +82,8 @@ final class SDKWebViewController: UIViewController {
         skipAfterSec: Int? = nil,
         orientationMask: UIInterfaceOrientationMask = .landscape,
         onClose: (() -> Void)? = nil,
-        onReady: (() -> Void)? = nil
+        onReady: (() -> Void)? = nil,
+        externalURLHandler: @escaping @MainActor (URL) -> Void = SDKWebViewController.openExternally
     ) {
         self.url = url
         self.clickThroughURL = clickThroughURL
@@ -83,6 +94,7 @@ final class SDKWebViewController: UIViewController {
         self.orientationMask = orientationMask
         self.onClose = onClose
         self.onReady = onReady
+        self.externalURLHandler = externalURLHandler
         super.init(
             nibName: nil,
             bundle: nil
@@ -697,7 +709,7 @@ final class SDKWebViewController: UIViewController {
             || path.hasSuffix(".webm")
     }
 
-    private static func makeWebViewConfiguration() -> WKWebViewConfiguration {
+    static func makeWebViewConfiguration() -> WKWebViewConfiguration {
         let configuration = WKWebViewConfiguration()
         configuration.allowsInlineMediaPlayback = true
 
@@ -706,6 +718,12 @@ final class SDKWebViewController: UIViewController {
         }
 
         return configuration
+    }
+
+    private static func openExternally(
+        _ url: URL
+    ) {
+        UIApplication.shared.open(url)
     }
 
     @objc
@@ -772,6 +790,13 @@ extension SDKWebViewController: WKNavigationDelegate {
         decidePolicyFor navigationAction: WKNavigationAction,
         decisionHandler: @escaping (WKNavigationActionPolicy) -> Void
     ) {
+        if handleExternalNavigation(
+            navigationAction.request.url
+        ) {
+            decisionHandler(.cancel)
+            return
+        }
+
         if handleSDKNavigation(
             navigationAction.request.url
         ) {
@@ -822,6 +847,17 @@ extension SDKWebViewController: WKNavigationDelegate {
             break
         }
 
+        return true
+    }
+
+    private func handleExternalNavigation(
+        _ url: URL?
+    ) -> Bool {
+        guard let url, Self.externallyHandledSchemes.contains(url.scheme?.lowercased() ?? "") else {
+            return false
+        }
+
+        externalURLHandler(url)
         return true
     }
 

@@ -34,15 +34,12 @@ final class ContentResolverTests: XCTestCase {
             response: response
         )
 
-        XCTAssertEqual(
-            action,
-            .banner(
-                SDKBannerContent(
-                    title: "Test",
-                    targetURL: URL(string: "https://example.com")!
-                )
-            )
-        )
+        guard case let .banner(content) = action else {
+            return XCTFail("Expected a banner action, got \(action)")
+        }
+
+        XCTAssertEqual(content.title, "Test")
+        XCTAssertEqual(content.targetURL, URL(string: "https://example.com")!)
     }
 
     func testBlockedResponse() throws {
@@ -86,15 +83,12 @@ final class ContentResolverTests: XCTestCase {
             response: response
         )
 
-        XCTAssertEqual(
-            action,
-            .internalAd(
-                SDKFullscreenAdContent(
-                    mediaURL: URL(string: "https://example.com/ad.html")!,
-                    targetURL: URL(string: "https://example.com/click")!
-                )
-            )
-        )
+        guard case let .internalAd(content) = action else {
+            return XCTFail("Expected an internal ad action, got \(action)")
+        }
+
+        XCTAssertEqual(content.mediaURL, URL(string: "https://example.com/ad.html")!)
+        XCTAssertEqual(content.targetURL, URL(string: "https://example.com/click")!)
     }
 
     func testUnityBannerResponseResolvesToBanner() throws {
@@ -109,16 +103,13 @@ final class ContentResolverTests: XCTestCase {
             response: response
         )
 
-        XCTAssertEqual(
-            action,
-            .banner(
-                SDKBannerContent(
-                    title: "Install",
-                    targetURL: URL(string: "https://example.com/click")!,
-                    ctaText: "Install"
-                )
-            )
-        )
+        guard case let .banner(content) = action else {
+            return XCTFail("Expected a banner action, got \(action)")
+        }
+
+        XCTAssertEqual(content.title, "Install")
+        XCTAssertEqual(content.targetURL, URL(string: "https://example.com/click")!)
+        XCTAssertEqual(content.ctaText, "Install")
     }
 
     func testUnityBannerResponsePrefersClickURLOverStoreURL() throws {
@@ -134,16 +125,11 @@ final class ContentResolverTests: XCTestCase {
             response: response
         )
 
-        XCTAssertEqual(
-            action,
-            .banner(
-                SDKBannerContent(
-                    title: "Install",
-                    targetURL: URL(string: "https://example.com/offer")!,
-                    ctaText: "Install"
-                )
-            )
-        )
+        guard case let .banner(content) = action else {
+            return XCTFail("Expected a banner action, got \(action)")
+        }
+
+        XCTAssertEqual(content.targetURL, URL(string: "https://example.com/offer")!)
     }
 
     func testBannerResponsePreservesMediaAndTracking() throws {
@@ -163,21 +149,21 @@ final class ContentResolverTests: XCTestCase {
             response: response
         )
 
+        guard case let .banner(content) = action else {
+            return XCTFail("Expected a banner action, got \(action)")
+        }
+
+        XCTAssertEqual(content.title, "Title")
+        XCTAssertEqual(content.body, "Body")
+        XCTAssertEqual(content.mediaURL, URL(string: "https://example.com/image.png")!)
+        XCTAssertEqual(content.targetURL, URL(string: "https://example.com/click")!)
+        XCTAssertEqual(content.ctaText, "Install")
         XCTAssertEqual(
-            action,
-            .banner(
-                SDKBannerContent(
-                    title: "Title",
-                    body: "Body",
-                    mediaURL: URL(string: "https://example.com/image.png")!,
-                    targetURL: URL(string: "https://example.com/click")!,
-                    ctaText: "Install",
-                    tracking: SDKAdTracking(
-                        adType: "banner",
-                        impressionURL: URL(string: "https://example.com/impression")!,
-                        clickURL: URL(string: "https://example.com/click-track")!
-                    )
-                )
+            content.tracking,
+            SDKAdTracking(
+                adType: "banner",
+                impressionURL: URL(string: "https://example.com/impression")!,
+                clickURL: URL(string: "https://example.com/click-track")!
             )
         )
     }

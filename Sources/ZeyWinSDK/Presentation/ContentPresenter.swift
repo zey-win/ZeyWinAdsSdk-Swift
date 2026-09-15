@@ -160,10 +160,23 @@ final class ContentPresenter: ContentPresenting {
 
         webViewController.modalPresentationStyle = .fullScreen
 
-        viewController.present(
+        topmostPresentationController(from: viewController).present(
             webViewController,
             animated: onReady == nil
         )
+    }
+
+    private func topmostPresentationController(
+        from viewController: UIViewController
+    ) -> UIViewController {
+        var presentationController = viewController
+
+        while let presentedViewController = presentationController.presentedViewController,
+              !presentedViewController.isBeingDismissed {
+            presentationController = presentedViewController
+        }
+
+        return presentationController
     }
 
     func presentStickyBanner(

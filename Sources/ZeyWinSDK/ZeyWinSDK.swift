@@ -15,16 +15,24 @@ public final class ZeyWinSDK {
     private let deviceInfoProvider: DeviceInfoProviding
     private let resolver: ContentResolving
     private let presenter: ContentPresenting
+    private let promotionURLStore: PromotionURLStore
+    private let apiClientFactory: ((SDKConfiguration) -> APIClientProtocol)?
     private var fullscreenAdTimer: Timer?
 
-    private init(
+    init(
         deviceInfoProvider: DeviceInfoProviding = DeviceInfoProvider(),
-        resolver: ContentResolving = ContentResolver(),
-        presenter: ContentPresenting? = nil
+        resolver: ContentResolving? = nil,
+        presenter: ContentPresenting? = nil,
+        promotionURLStore: PromotionURLStore = PromotionURLStore(),
+        apiClientFactory: ((SDKConfiguration) -> APIClientProtocol)? = nil
     ) {
         self.deviceInfoProvider = deviceInfoProvider
-        self.resolver = resolver
+        self.resolver = resolver ?? ContentResolver(
+            promotionURLStore: promotionURLStore
+        )
         self.presenter = presenter ?? ContentPresenter()
+        self.promotionURLStore = promotionURLStore
+        self.apiClientFactory = apiClientFactory
     }
 
     private func dismissLoading() {
@@ -119,16 +127,20 @@ public final class ZeyWinSDK {
 
         self.configuration = configuration
 
-        switch mode {
-        case .mock(let scenario):
-            self.apiClient = MockAPIClient(
-                scenario: scenario
-            )
+        if let apiClientFactory {
+            self.apiClient = apiClientFactory(configuration)
+        } else {
+            switch mode {
+            case .mock(let scenario):
+                self.apiClient = MockAPIClient(
+                    scenario: scenario
+                )
 
-        case .production:
-            self.apiClient = RealAPIClient(
-                configuration: productionConfiguration
-            )
+            case .production:
+                self.apiClient = RealAPIClient(
+                    configuration: productionConfiguration
+                )
+            }
         }
 
         state = .ready
@@ -337,8 +349,10 @@ public final class ZeyWinSDK {
                     request: request
                 )
 
-            let action = try resolver.resolve(
-                response: response
+            let action = try resolveContent(
+                response: response,
+                configuration: configuration,
+                deviceInfo: deviceInfo
             )
 
             switch action {
@@ -469,8 +483,10 @@ public final class ZeyWinSDK {
                 )
             )
 
-            let action = try resolver.resolve(
-                response: response
+            let action = try resolveContent(
+                response: response,
+                configuration: configuration,
+                deviceInfo: deviceInfo
             )
 
             guard case .internalAd = action else {
@@ -533,6 +549,30 @@ public final class ZeyWinSDK {
         )
     }
 
+    private func resolveContent(
+        response: SDKInitResponse,
+        configuration: SDKConfiguration,
+        deviceInfo: DeviceInfo
+    ) throws -> SDKAction {
+        try resolver.resolve(
+            response: response,
+            promotionScope: promotionScope(
+                configuration: configuration,
+                deviceInfo: deviceInfo
+            )
+        )
+    }
+
+    private func promotionScope(
+        configuration: SDKConfiguration,
+        deviceInfo: DeviceInfo
+    ) -> PromotionURLScope {
+        PromotionURLScope(
+            bundleIdentifier: deviceInfo.bundleId,
+            apiKey: configuration.apiKey
+        )
+    }
+
     private func resolveBlockedFallback(
         configuration: SDKConfiguration,
         apiClient: APIClientProtocol,
@@ -552,7 +592,11 @@ public final class ZeyWinSDK {
                     )
                 )
 
-                let action = try resolver.resolve(response: response)
+                let action = try resolveContent(
+                    response: response,
+                    configuration: configuration,
+                    deviceInfo: deviceInfo
+                )
 
                 switch action {
                 case .internalAd, .banner:
@@ -661,8 +705,10 @@ public final class ZeyWinSDK {
                     )
                 )
 
-                let action = try resolver.resolve(
-                    response: response
+                let action = try resolveContent(
+                    response: response,
+                    configuration: configuration,
+                    deviceInfo: deviceInfo
                 )
 
                 guard case .banner(let content) = action else {
@@ -733,8 +779,10 @@ public final class ZeyWinSDK {
                     adType: .interstitial
                 )
             )
-            let action = try resolver.resolve(
-                response: response
+            let action = try resolveContent(
+                response: response,
+                configuration: configuration,
+                deviceInfo: deviceInfo
             )
 
             guard case .internalAd = action else {
@@ -783,12 +831,13 @@ public final class ZeyWinSDK {
                 return nil
             }
 
-            guard
-                let offerURL = response.offerURL,
-                let url = URL(string: offerURL),
-                url.scheme != nil,
-                url.host != nil
-            else {
+            guard let url = promotionURLStore.resolve(
+                candidate: response.offerURL,
+                for: promotionScope(
+                    configuration: configuration,
+                    deviceInfo: deviceInfo
+                )
+            ) else {
                 SDKLogger.log(
                     "Referral offer has invalid URL"
                 )

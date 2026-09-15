@@ -1,0 +1,153 @@
+name: Swift iOS SDK CI
+
+on:
+  pull_request:
+    branches:
+      - main
+  push:
+    branches:
+      - main
+      - "tests/**"
+      - "sync/**"
+  workflow_dispatch:
+    inputs:
+      run_network_webview_tests:
+        description: Run the opt-in WebView tests against external network services
+        required: false
+        default: false
+        type: boolean
+
+jobs:
+  simulator-tests:
+    name: Required iOS Simulator XCTest
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Show Xcode and Simulator destinations
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -scheme ZeyWinSDK -sdk iphonesimulator -showdestinations
+          xcrun simctl list devices available
+
+      - name: Select and boot an available iPhone Simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          simulator_udid="$(xcrun simctl list devices available -j | jq -r '
+            [
+              .devices[] | .[]
+              | select(.isAvailable == true)
+              | select(.name | test("^iPhone"))
+            ]
+            | sort_by(.name)
+            | .[0].udid // empty
+          ' )"
+
+          if [[ -z "$simulator_udid" ]]; then
+            echo "No available iPhone Simulator was found." >&2
+            exit 1
+          fi
+
+          echo "SIMULATOR_UDID=$simulator_udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$simulator_udid" || true
+          xcrun simctl bootstatus "$simulator_udid" -b
+
+      - name: Build Swift SDK for iOS Simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild build \
+            -scheme ZeyWinSDK \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/zeywin-ios-derived-data" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Run default XCTest suite
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -scheme ZeyWinSDK \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/zeywin-ios-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/ZeyWinSDK-default.xcresult" \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload default XCTest result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeywin-ios-default-xcresult
+          path: ${{ runner.temp }}/ZeyWinSDK-default.xcresult
+          if-no-files-found: warn
+          retention-days: 7
+
+  network-webview-tests:
+    name: Optional network WebView XCTest
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      inputs.run_network_webview_tests
+    runs-on: macos-15
+    timeout-minutes: 30
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select and boot an available iPhone Simulator
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version
+          xcodebuild -scheme ZeyWinSDK -sdk iphonesimulator -showdestinations
+          simulator_udid="$(xcrun simctl list devices available -j | jq -r '
+            [
+              .devices[] | .[]
+              | select(.isAvailable == true)
+              | select(.name | test("^iPhone"))
+            ]
+            | sort_by(.name)
+            | .[0].udid // empty
+          ' )"
+
+          if [[ -z "$simulator_udid" ]]; then
+            echo "No available iPhone Simulator was found." >&2
+            exit 1
+          fi
+
+          echo "SIMULATOR_UDID=$simulator_udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$simulator_udid" || true
+          xcrun simctl bootstatus "$simulator_udid" -b
+
+      - name: Run opt-in network WebView tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild test \
+            -scheme ZeyWinSDK \
+            -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/zeywin-ios-network-webview-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/ZeyWinSDK-network-webview.xcresult" \
+            OTHER_SWIFT_FLAGS='-DZEYWIN_RUN_NETWORK_WEBVIEW_TESTS' \
+            -only-testing:ZeyWinSDKTests/SDKWebViewIntegrationTests/testChecklistPassesAgainstProductionPage \
+            -only-testing:ZeyWinSDKTests/SDKWebViewIntegrationTests/testRemoteRedirectChainsReachFinalChecklistPage \
+            -only-testing:ZeyWinSDKTests/SDKWebViewIntegrationTests/testCleartextHTTPIsExplicitlyClassifiedByATS \
+            CODE_SIGNING_ALLOWED=NO
+
+      - name: Upload network WebView result bundle
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: zeywin-ios-network-webview-xcresult
+          path: ${{ runner.temp }}/ZeyWinSDK-network-webview.xcresult
+          if-no-files-found: warn
+          retention-days: 7
