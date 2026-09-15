@@ -557,6 +557,10 @@ private final class NavigationProbe: NSObject, WKNavigationDelegate {
         didFail navigation: WKNavigation?,
         withError error: Error
     ) {
+        guard !isCancelledNavigation(error) else {
+            return
+        }
+
         finish(with: .failure(error))
     }
 
@@ -565,7 +569,27 @@ private final class NavigationProbe: NSObject, WKNavigationDelegate {
         didFailProvisionalNavigation navigation: WKNavigation?,
         withError error: Error
     ) {
+        guard !isCancelledNavigation(error) else {
+            return
+        }
+
         finish(with: .failure(error))
+    }
+
+    private func isCancelledNavigation(
+        _ error: Error
+    ) -> Bool {
+        let nsError = error as NSError
+
+        if nsError.domain == NSURLErrorDomain,
+           nsError.code == NSURLErrorCancelled {
+            return true
+        }
+
+        // WebKit may surface the same superseded navigation as its private
+        // frame-load-interrupted error rather than NSURLErrorCancelled.
+        return nsError.domain == "WebKitErrorDomain"
+            && nsError.code == 102
     }
 
     private func finish(
