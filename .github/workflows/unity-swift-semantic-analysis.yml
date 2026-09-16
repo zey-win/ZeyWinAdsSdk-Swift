@@ -1,0 +1,130 @@
+name: Unity to Swift AI semantic analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      from_commit:
+        description: Optional Unity baseline override; does not update last_synced_commit
+        required: false
+        type: string
+      model:
+        description: OpenAI Responses API model
+        default: gpt-5.2
+        required: false
+        type: string
+  schedule:
+    # A read-only daily poll is required because Unity main is in another repository.
+    - cron: '23 3 * * *'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unity-swift-semantic-analysis-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  semantic-report:
+    name: Report Unity main semantic parity for Swift review
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout Swift repository
+        uses: actions/checkout@v4
+
+      - name: Clone Unity main without blobs
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --filter=blob:none --branch main \
+            https://github.com/zey-win/ZeyWinAdsSDK-Unity.git \
+            "$RUNNER_TEMP/ZeyWinAdsSDK-Unity"
+
+      - name: Generate report-only detector input
+        id: detector
+        continue-on-error: true
+        shell: bash
+        env:
+          FROM_COMMIT: ${{ inputs.from_commit }}
+        run: |
+          set -euo pipefail
+          args=(
+            --unity-dir "$RUNNER_TEMP/ZeyWinAdsSDK-Unity"
+            --output "$RUNNER_TEMP/unity-swift-change-report.md"
+          )
+
+          if [[ -n "$FROM_COMMIT" ]]; then
+            args+=(--from "$FROM_COMMIT")
+          fi
+
+          bash scripts/unity_swift_change_detector.sh "${args[@]}"
+
+      - name: Write detector failure report
+        if: steps.detector.outcome != 'success'
+        shell: bash
+        run: |
+          cat > "$RUNNER_TEMP/unity-swift-semantic-analysis.md" <<'EOF'
+          # Unity → Swift AI semantic analysis
+
+          ## Analysis unavailable
+
+          The report-only detector failed before semantic analysis could begin. No
+          Swift/Unity source, branch, PR, merge, or sync baseline was changed.
+          Inspect the failed detector step for the underlying Git or baseline error.
+          EOF
+
+      - name: Run report-only AI semantic analysis
+        id: semantic
+        if: steps.detector.outcome == 'success'
+        continue-on-error: true
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.model || 'gpt-5.2' }}
+        run: |
+          set -euo pipefail
+          bash scripts/unity_swift_semantic_analysis.sh \
+            --unity-dir "$RUNNER_TEMP/ZeyWinAdsSDK-Unity" \
+            --detector-report "$RUNNER_TEMP/unity-swift-change-report.md" \
+            --output "$RUNNER_TEMP/unity-swift-semantic-analysis.md"
+
+      - name: Publish reports to job summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# Unity → Swift sync reports'
+            echo
+            echo '## Detector report'
+            if [[ -f "$RUNNER_TEMP/unity-swift-change-report.md" ]]; then
+              sed -n '1,1200p' "$RUNNER_TEMP/unity-swift-change-report.md"
+            else
+              echo 'Detector report was not generated.'
+            fi
+            echo
+            echo '## AI semantic report'
+            if [[ -f "$RUNNER_TEMP/unity-swift-semantic-analysis.md" ]]; then
+              sed -n '1,1600p' "$RUNNER_TEMP/unity-swift-semantic-analysis.md"
+            else
+              echo 'AI semantic report was not generated.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload detector and AI reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-swift-semantic-analysis
+          path: |
+            ${{ runner.temp }}/unity-swift-change-report.md
+            ${{ runner.temp }}/unity-swift-semantic-analysis.md
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail when analysis was unavailable
+        if: always() && (steps.detector.outcome != 'success' || steps.semantic.outcome == 'failure')
+        shell: bash
+        run: |
+          echo 'Detector or AI semantic analysis was unavailable; inspect the uploaded reports.' >&2
+          exit 1
