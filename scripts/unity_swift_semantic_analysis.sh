@@ -11,7 +11,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 unity_dir=""
 detector_report=""
 output_file="$repo_root/unity-swift-semantic-analysis.md"
-model="${OPENAI_MODEL:-gpt-5.2}"
+model="${OPENAI_MODEL:-gpt-5.6-terra}"
 api_url="${OPENAI_RESPONSES_API_URL:-https://api.openai.com/v1/responses}"
 max_diff_bytes="${UNITY_SWIFT_MAX_DIFF_BYTES:-350000}"
 max_file_bytes="${UNITY_SWIFT_MAX_FILE_BYTES:-45000}"
@@ -24,7 +24,7 @@ Usage:
 
 Options:
   --output <path>        Default: unity-swift-semantic-analysis.md.
-  --model <model>        Default: OPENAI_MODEL or gpt-5.2.
+  --model <model>        Default: OPENAI_MODEL or gpt-5.6-terra.
   --api-url <url>        Default: OpenAI Responses API endpoint.
   -h, --help             Show this message.
 

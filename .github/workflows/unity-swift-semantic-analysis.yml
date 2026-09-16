@@ -9,7 +9,7 @@ on:
         type: string
       model:
         description: OpenAI Responses API model
-        default: gpt-5.2
+        default: gpt-5.6-terra
         required: false
         type: string
   schedule:
@@ -18,6 +18,7 @@ on:
 
 permissions:
   contents: read
+  actions: read
 
 concurrency:
   group: unity-swift-semantic-analysis-${{ github.ref }}
@@ -81,7 +82,7 @@ jobs:
         shell: bash
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          OPENAI_MODEL: ${{ inputs.model || 'gpt-5.2' }}
+          OPENAI_MODEL: ${{ inputs.model || 'gpt-5.6-terra' }}
         run: |
           set -euo pipefail
           bash scripts/unity_swift_semantic_analysis.sh \
@@ -127,4 +128,67 @@ jobs:
         shell: bash
         run: |
           echo 'Detector or AI semantic analysis was unavailable; inspect the uploaded reports.' >&2
+          exit 1
+
+  port-plan:
+    name: Generate Swift port plan from semantic report
+    needs: semantic-report
+    if: needs.semantic-report.result == 'success'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout Swift repository
+        uses: actions/checkout@v4
+
+      - name: Download semantic analysis artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: unity-swift-semantic-analysis
+          path: ${{ runner.temp }}/unity-swift-semantic-artifact
+
+      - name: Generate report-only AI port plan
+        id: plan
+        continue-on-error: true
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.model || 'gpt-5.6-terra' }}
+        run: |
+          set -euo pipefail
+          bash scripts/unity_swift_port_plan.sh \
+            --semantic-report "$RUNNER_TEMP/unity-swift-semantic-artifact/unity-swift-semantic-analysis.md" \
+            --markdown-output "$RUNNER_TEMP/unity-swift-port-plan.md" \
+            --json-output "$RUNNER_TEMP/unity-swift-port-plan.json"
+
+      - name: Publish port-plan summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# Unity → Swift port plan'
+            echo
+            if [[ -f "$RUNNER_TEMP/unity-swift-port-plan.md" ]]; then
+              sed -n '1,1600p' "$RUNNER_TEMP/unity-swift-port-plan.md"
+            else
+              echo 'Port plan was not generated.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload Markdown and JSON port plans
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-swift-port-plan
+          path: |
+            ${{ runner.temp }}/unity-swift-port-plan.md
+            ${{ runner.temp }}/unity-swift-port-plan.json
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail when port plan was unavailable
+        if: always() && steps.plan.outcome == 'failure'
+        shell: bash
+        run: |
+          echo 'Port plan generation was unavailable or malformed; inspect the uploaded plan report.' >&2
           exit 1
