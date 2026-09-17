@@ -7,6 +7,7 @@ set -euo pipefail
 umask 077
 
 port_plan=""
+patch_ready_port_plan=""
 markdown_output="patch-proposal.md"
 json_output="patch-proposal.json"
 patch_output="proposed.patch"
@@ -163,7 +164,7 @@ write_no_op_outputs() {
         cat <<'EOF'
 ## No patch proposal
 
-The source port plan has no ready port items. No OpenAI request was made and no patch
+The source port plan has no patch-ready items. No OpenAI request was made and no patch
 was generated.
 EOF
     } > "$markdown_output"
@@ -222,8 +223,24 @@ if ! jq -e '
         (.id | type == "string" and length > 0)
         and (.source_status == "MISSING_IN_SWIFT" or .source_status == "PARTIALLY_IMPLEMENTED")
         and .swift_port_needed == true
-        and (.target_swift_files_symbols | type == "array" and length > 0)
-        and (.target_swift_files_symbols | all(.[]; type == "string" and length > 0))
+        and (.patch_ready | type == "boolean")
+        and (.target_swift_files_symbols | type == "array" and all(.[]; type == "string" and length > 0))
+        and (.blockers | type == "array" and all(.[]; type == "string" and length > 0))
+        and (
+            (.patch_ready == true
+                and (.target_swift_files_symbols | length > 0)
+                and (.blockers | length == 0)
+                and all(.target_swift_files_symbols[];
+                    test("^Sources/ZeyWinSDK/[^\\n]+\\.swift( — [^\\n]+)?$")
+                    or test("^Tests/ZeyWinSDKTests/[^\\n]+\\.swift( — [^\\n]+)?$")
+                    or test("^Package\\.swift( — [^\\n]+)?$")
+                )
+            )
+            or (.patch_ready == false
+                and (.target_swift_files_symbols | length == 0)
+                and (.blockers | length > 0)
+            )
+        )
     )
     and (([.items[].id] | length) == ([.items[].id] | unique | length))
 ' "$port_plan" > /dev/null; then
@@ -232,11 +249,21 @@ if ! jq -e '
     exit 4
 fi
 
-jq -r '[.items[].target_swift_files_symbols[] | split(" — ")[0] | gsub("^[[:space:]]+|[[:space:]]+$"; "")] | unique[]' "$port_plan" > "$target_paths_file"
+jq '.items |= map(select(.patch_ready == true))' "$port_plan" > "$tmp_dir/patch-ready-port-plan.json"
+patch_ready_port_plan="$tmp_dir/patch-ready-port-plan.json"
+patch_ready_item_count="$(jq '.items | length' "$patch_ready_port_plan")"
+
+if [[ "$patch_ready_item_count" == "0" ]]; then
+    write_no_op_outputs
+    echo "Wrote no-op patch proposal."
+    exit 0
+fi
+
+jq -r '[.items[].target_swift_files_symbols[] | split(" — ")[0] | gsub("^[[:space:]]+|[[:space:]]+$"; "")] | unique[]' "$patch_ready_port_plan" > "$target_paths_file"
 jq '[.items[] | {
     id: .id,
     target_paths: [.target_swift_files_symbols[] | split(" — ")[0] | gsub("^[[:space:]]+|[[:space:]]+$"; "")] | unique
-}]' "$port_plan" > "$port_item_targets_file"
+}]' "$patch_ready_port_plan" > "$port_item_targets_file"
 
 while IFS= read -r path; do
     if [[ "$path" == "Package.swift" ]]; then
@@ -257,7 +284,7 @@ done < "$target_paths_file"
     echo
     echo '## Port plan'
     echo
-    jq '.' "$port_plan"
+    jq '.' "$patch_ready_port_plan"
     echo
     echo '## Patch allowlist'
     echo
@@ -288,7 +315,7 @@ if [[ -z "${OPENAI_API_KEY:-}" ]]; then
     exit 6
 fi
 
-port_item_count="$(jq '.items | length' "$port_plan")"
+port_item_count="$patch_ready_item_count"
 
 jq -n \
     --arg model "$model" \
@@ -389,7 +416,7 @@ if ! printf '%s' "$proposal_text" | jq -e '
     exit 9
 fi
 
-expected_ids="$(jq -c '[.items[].id] | sort' "$port_plan")"
+expected_ids="$(jq -c '[.items[].id] | sort' "$patch_ready_port_plan")"
 proposal_ids="$(printf '%s' "$proposal_text" | jq -c '[.items[].id] | sort')"
 proposal_item_count="$(printf '%s' "$proposal_text" | jq '.items | length')"
 if [[ "$proposal_item_count" != "$port_item_count" ]] || [[ "$proposal_ids" != "$expected_ids" ]]; then
