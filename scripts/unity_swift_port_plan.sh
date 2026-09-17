@@ -281,6 +281,15 @@ Swift files/symbols named by the semantic report. Tests must name existing or pr
 XCTest/XCUITest files and state what they verify. Dependencies must list any backend,
 privacy, product, real-device, or human decision needed before implementation.
 
+Every item must include patch_ready and blockers. Set patch_ready to true only
+when every target_swift_files_symbols entry is a concrete repo-relative path under
+Sources/ZeyWinSDK/ or Tests/ZeyWinSDKTests/ (or Package.swift when explicitly
+required), and no target-mapping blocker remains. Do not put prose, explanations,
+"Human mapping required", assumptions, or blockers in target_swift_files_symbols.
+When a concrete Swift target cannot be confirmed, return
+target_swift_files_symbols: [], patch_ready: false, and a non-empty blockers
+array that states the unresolved contract or integration decision.
+
 Return JSON matching the requested schema exactly.
 
 ## Eligible semantic findings
@@ -322,10 +331,12 @@ jq -n \
                                     "unity_file_symbol",
                                     "behavior_to_port",
                                     "target_swift_files_symbols",
+                                    "patch_ready",
                                     "implementation_steps",
                                     "tests_to_add_or_update",
                                     "risk_level",
                                     "dependencies",
+                                    "blockers",
                                     "acceptance_criteria",
                                     "swift_port_needed"
                                 ],
@@ -336,10 +347,12 @@ jq -n \
                                     unity_file_symbol: {type: "string"},
                                     behavior_to_port: {type: "string"},
                                     target_swift_files_symbols: {type: "array", items: {type: "string"}},
+                                    patch_ready: {type: "boolean"},
                                     implementation_steps: {type: "array", items: {type: "string"}},
                                     tests_to_add_or_update: {type: "array", items: {type: "string"}},
                                     risk_level: {type: "string", enum: ["low", "medium", "high"]},
                                     dependencies: {type: "array", items: {type: "string"}},
+                                    blockers: {type: "array", items: {type: "string"}},
                                     acceptance_criteria: {type: "array", items: {type: "string"}},
                                     swift_port_needed: {type: "boolean"}
                                 }
@@ -379,6 +392,23 @@ if ! printf '%s' "$plan_text" | jq -e '
     and all(.items[];
         (.source_status == "MISSING_IN_SWIFT" or .source_status == "PARTIALLY_IMPLEMENTED")
         and .swift_port_needed == true
+        and (.target_swift_files_symbols | type == "array" and all(.[]; type == "string"))
+        and (.blockers | type == "array" and all(.[]; type == "string"))
+        and (
+            (.patch_ready == true
+                and (.target_swift_files_symbols | length > 0)
+                and (.blockers | length == 0)
+                and all(.target_swift_files_symbols[];
+                    test("^Sources/ZeyWinSDK/[^\\n]+\\.swift( — [^\\n]+)?$")
+                    or test("^Tests/ZeyWinSDKTests/[^\\n]+\\.swift( — [^\\n]+)?$")
+                    or test("^Package\\.swift( — [^\\n]+)?$")
+                )
+            )
+            or (.patch_ready == false
+                and (.target_swift_files_symbols | length == 0)
+                and (.blockers | length > 0)
+            )
+        )
     )
 ' > /dev/null; then
     write_unavailable_outputs "The AI response did not conform to the required port-plan schema."
@@ -419,12 +449,14 @@ jq \
         "- Source Unity commits: " + (if (.source_unity_commits | length) == 0 then "Not identified in semantic report" else (.source_unity_commits | map("`" + . + "`") | join(", ")) end) + "\n" +
         "- Unity file / symbol: \(.unity_file_symbol)\n" +
         "- Behavior to port: \(.behavior_to_port)\n" +
-        "- Target Swift files / symbols: " + (if (.target_swift_files_symbols | length) == 0 then "Human mapping required" else (.target_swift_files_symbols | map("`" + . + "`") | join(", ")) end) + "\n" +
+        "- Target Swift files / symbols: " + (if (.target_swift_files_symbols | length) == 0 then "No concrete target confirmed" else (.target_swift_files_symbols | map("`" + . + "`") | join(", ")) end) + "\n" +
+        "- Patch ready: `\(.patch_ready)`\n" +
         "- Risk: `\(.risk_level)`\n" +
         "- Swift port needed: \(.swift_port_needed)\n\n" +
         "#### Implementation steps\n\n" + ([.implementation_steps[] | "- " + .] | join("\n")) + "\n\n" +
         "#### Tests\n\n" + ([.tests_to_add_or_update[] | "- " + .] | join("\n")) + "\n\n" +
         "#### Dependencies\n\n" + ([.dependencies[] | "- " + .] | join("\n")) + "\n\n" +
+        "#### Blockers\n\n" + (if (.blockers | length) == 0 then "- None" else ([.blockers[] | "- " + .] | join("\n")) end) + "\n\n" +
         "#### Acceptance criteria\n\n" + ([.acceptance_criteria[] | "- " + .] | join("\n")) + "\n"
     ' "$json_output"
 } > "$markdown_output"
