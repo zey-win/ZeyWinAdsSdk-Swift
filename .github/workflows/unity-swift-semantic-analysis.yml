@@ -136,6 +136,8 @@ jobs:
     if: needs.semantic-report.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 12
+    outputs:
+      patch_proposal_ready: ${{ steps.patch-proposal-gate.outputs.ready }}
 
     steps:
       - name: Checkout Swift repository
@@ -160,6 +162,24 @@ jobs:
             --semantic-report "$RUNNER_TEMP/unity-swift-semantic-artifact/unity-swift-semantic-analysis.md" \
             --markdown-output "$RUNNER_TEMP/unity-swift-port-plan.md" \
             --json-output "$RUNNER_TEMP/unity-swift-port-plan.json"
+
+      - name: Detect ready port plan for patch proposal
+        id: patch-proposal-gate
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [[ -f "$RUNNER_TEMP/unity-swift-port-plan.json" ]] \
+            && jq -e '
+              .schema == "zeywin.unity-swift-port-plan"
+              and .schema_version == "1.0"
+              and .plan_status == "ready"
+              and (.items | type == "array" and length > 0)
+            ' "$RUNNER_TEMP/unity-swift-port-plan.json" > /dev/null; then
+            echo 'ready=true' >> "$GITHUB_OUTPUT"
+          else
+            echo 'ready=false' >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Publish port-plan summary
         if: always()
@@ -191,4 +211,68 @@ jobs:
         shell: bash
         run: |
           echo 'Port plan generation was unavailable or malformed; inspect the uploaded plan report.' >&2
+          exit 1
+
+  patch-proposal:
+    name: Generate read-only Swift patch proposal
+    needs: port-plan
+    if: needs.port-plan.result == 'success' && needs.port-plan.outputs.patch_proposal_ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 12
+
+    steps:
+      - name: Checkout Swift repository
+        uses: actions/checkout@v4
+
+      - name: Download ready port-plan artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: unity-swift-port-plan
+          path: ${{ runner.temp }}/unity-swift-port-plan-artifact
+
+      - name: Generate read-only AI patch proposal
+        id: proposal
+        continue-on-error: true
+        shell: bash
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          OPENAI_MODEL: ${{ inputs.model || 'gpt-5.6-terra' }}
+        run: |
+          set -euo pipefail
+          proposal_dir="$RUNNER_TEMP/unity-swift-patch-proposal"
+          mkdir -p "$proposal_dir"
+          bash scripts/unity_swift_patch_proposal.sh \
+            --port-plan "$RUNNER_TEMP/unity-swift-port-plan-artifact/unity-swift-port-plan.json" \
+            --markdown-output "$proposal_dir/patch-proposal.md" \
+            --json-output "$proposal_dir/patch-proposal.json" \
+            --patch-output "$proposal_dir/proposed.patch"
+
+      - name: Publish patch-proposal summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# Unity → Swift patch proposal'
+            echo
+            if [[ -f "$RUNNER_TEMP/unity-swift-patch-proposal/patch-proposal.md" ]]; then
+              sed -n '1,2400p' "$RUNNER_TEMP/unity-swift-patch-proposal/patch-proposal.md"
+            else
+              echo 'Patch proposal was not generated.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload patch-proposal artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-swift-patch-proposal
+          path: ${{ runner.temp }}/unity-swift-patch-proposal
+          if-no-files-found: warn
+          retention-days: 30
+
+      - name: Fail when patch proposal was unavailable
+        if: always() && steps.proposal.outcome == 'failure'
+        shell: bash
+        run: |
+          echo 'Patch proposal generation was unavailable or failed validation; inspect the uploaded artifact.' >&2
           exit 1
