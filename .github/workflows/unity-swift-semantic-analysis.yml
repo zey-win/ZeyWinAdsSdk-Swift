@@ -276,3 +276,337 @@ jobs:
         run: |
           echo 'Patch proposal generation was unavailable or failed validation; inspect the uploaded artifact.' >&2
           exit 1
+
+  sync-apply:
+    name: Validate, test, and propose Unity sync PR
+    needs: [port-plan, patch-proposal]
+    if: needs.port-plan.result == 'success' && needs.patch-proposal.result == 'success'
+    runs-on: macos-15
+    # Includes a bounded wait for the normal PR-required workflow to publish the
+    # same check that branch protection requires.
+    timeout-minutes: 75
+    permissions:
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout current Swift main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          # A branch or PR created with github.token does not trigger pull_request
+          # workflows. The sync automation token below is intentionally used only
+          # for the eventual push/PR, never stored in local Git configuration.
+          persist-credentials: false
+
+      - name: Download sync input artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: unity-swift-*
+          path: ${{ runner.temp }}/unity-swift-sync-input
+          merge-multiple: true
+
+      - name: Revalidate proposal without applying it
+        id: preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          sync_dir="$RUNNER_TEMP/unity-swift-sync-validation"
+          mkdir -p "$sync_dir"
+          bash scripts/unity_swift_apply_validated_patch.sh \
+            --mode validate \
+            --port-plan "$RUNNER_TEMP/unity-swift-sync-input/unity-swift-port-plan.json" \
+            --proposal "$RUNNER_TEMP/unity-swift-sync-input/patch-proposal.json" \
+            --patch "$RUNNER_TEMP/unity-swift-sync-input/proposed.patch" \
+            --report-output "$sync_dir/sync-validation-report.md" \
+            --applied-patch-output "$sync_dir/applied-patch.diff" \
+            --status-output "$sync_dir/status"
+          echo "status=$(tr -d '[:space:]' < "$sync_dir/status")" >> "$GITHUB_OUTPUT"
+
+      - name: Require non-recursive sync automation token
+        if: steps.preflight.outputs.status == 'ready'
+        shell: bash
+        env:
+          UNITY_SWIFT_SYNC_TOKEN: ${{ secrets.UNITY_SWIFT_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$UNITY_SWIFT_SYNC_TOKEN" ]] || {
+            echo 'UNITY_SWIFT_SYNC_TOKEN is required to create a branch/PR that triggers the required PR CI workflow.' >&2
+            exit 1
+          }
+
+      - name: Prepare safe sync branch from current main
+        id: branch
+        if: steps.preflight.outputs.status == 'ready'
+        shell: bash
+        run: |
+          set -euo pipefail
+          detector_report="$RUNNER_TEMP/unity-swift-sync-input/unity-swift-change-report.md"
+          unity_head="$(sed -nE 's/.*Target:.*\(([0-9a-f]{40})\).*/\1/p' "$detector_report" | head -n 1)"
+          if [[ -z "$unity_head" ]]; then
+            echo 'Could not determine Unity target SHA from detector metadata.' >&2
+            exit 1
+          fi
+
+          git fetch origin main
+          [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || {
+            echo 'Checkout is not based on current origin/main.' >&2
+            exit 1
+          }
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo 'Checkout is not clean before branch preparation.' >&2
+            exit 1
+          }
+
+          short_sha="${unity_head:0:7}"
+          sync_branch="sync/unity-${short_sha}"
+          echo "unity_head=$unity_head" >> "$GITHUB_ENV"
+          echo "sync_branch=$sync_branch" >> "$GITHUB_ENV"
+          echo "branch=$sync_branch" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$sync_branch" > /dev/null; then
+            git fetch origin "refs/heads/$sync_branch:refs/remotes/origin/$sync_branch"
+            if bash scripts/unity_swift_sync_branch_identity.sh \
+              --repo-root . \
+              --ref "origin/$sync_branch" \
+              --unity-head "$unity_head"; then
+              echo 'state=verified_existing' >> "$GITHUB_OUTPUT"
+              echo "pr_ref=origin/${sync_branch}" >> "$GITHUB_ENV"
+              exit 0
+            fi
+            echo "Existing $sync_branch does not contain an exact Unity-Head trailer for $unity_head; refusing to update it." >&2
+            exit 1
+          fi
+
+          git switch -c "$sync_branch"
+          echo 'state=new' >> "$GITHUB_OUTPUT"
+          echo 'pr_ref=HEAD' >> "$GITHUB_ENV"
+
+      - name: Apply revalidated patch locally
+        id: apply
+        if: steps.preflight.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
+        shell: bash
+        run: |
+          set -euo pipefail
+          sync_dir="$RUNNER_TEMP/unity-swift-sync-validation"
+          bash scripts/unity_swift_apply_validated_patch.sh \
+            --mode apply \
+            --port-plan "$RUNNER_TEMP/unity-swift-sync-input/unity-swift-port-plan.json" \
+            --proposal "$RUNNER_TEMP/unity-swift-sync-input/patch-proposal.json" \
+            --patch "$RUNNER_TEMP/unity-swift-sync-input/proposed.patch" \
+            --report-output "$sync_dir/sync-validation-report.md" \
+            --applied-patch-output "$sync_dir/applied-patch.diff" \
+            --changed-paths-output "$sync_dir/changed-paths.txt" \
+            --status-output "$sync_dir/status"
+
+      - name: Run static validation after patch apply
+        if: steps.preflight.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash -n scripts/unity_swift_semantic_analysis.sh
+          bash -n scripts/unity_swift_port_plan.sh
+          bash -n scripts/unity_swift_patch_proposal.sh
+          bash -n scripts/unity_swift_apply_validated_patch.sh
+          bash -n scripts/unity_swift_sync_branch_identity.sh
+          bash -n scripts/test_unity_swift_sync_safeguards.sh
+          ruby -e 'require "yaml"; YAML.load_file(".github/workflows/unity-swift-semantic-analysis.yml")'
+          git diff --check
+          bash scripts/test_unity_swift_sync_safeguards.sh
+
+      - name: Select and boot an available iPhone Simulator
+        if: steps.preflight.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
+        shell: bash
+        run: |
+          set -euo pipefail
+          xcodebuild -version | tee "$RUNNER_TEMP/unity-swift-sync-validation/xcode-version.log"
+          xcodebuild -scheme ZeyWinSDK -sdk iphonesimulator -showdestinations
+          simulator_udid="$(xcrun simctl list devices available -j | jq -r '
+            [.devices[] | .[] | select(.isAvailable == true) | select(.name | test("^iPhone"))]
+            | sort_by(.name) | .[0].udid // empty
+          ')"
+          [[ -n "$simulator_udid" ]] || { echo 'No available iPhone Simulator was found.' >&2; exit 1; }
+          echo "SIMULATOR_UDID=$simulator_udid" >> "$GITHUB_ENV"
+          xcrun simctl boot "$simulator_udid" || true
+          xcrun simctl bootstatus "$simulator_udid" -b
+
+      - name: Build Swift SDK for iOS Simulator
+        if: steps.preflight.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild build -scheme ZeyWinSDK -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/unity-swift-sync-derived-data" CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/unity-swift-sync-validation/build.log"
+
+      - name: Run required iOS Simulator XCTest suite
+        if: steps.preflight.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
+        shell: bash
+        run: |
+          set -o pipefail
+          xcodebuild test -scheme ZeyWinSDK -sdk iphonesimulator \
+            -destination "platform=iOS Simulator,id=$SIMULATOR_UDID" \
+            -derivedDataPath "$RUNNER_TEMP/unity-swift-sync-derived-data" \
+            -resultBundlePath "$RUNNER_TEMP/unity-swift-sync-validation/ZeyWinSDK-default.xcresult" \
+            CODE_SIGNING_ALLOWED=NO \
+            | tee "$RUNNER_TEMP/unity-swift-sync-validation/test.log"
+
+      - name: Commit and push validated sync branch
+        id: push
+        if: steps.preflight.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
+        env:
+          UNITY_SWIFT_SYNC_TOKEN: ${{ secrets.UNITY_SWIFT_SYNC_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          sync_dir="$RUNNER_TEMP/unity-swift-sync-validation"
+          expected_paths="$sync_dir/changed-paths.txt"
+          actual_paths="$sync_dir/pre-commit-changed-paths.txt"
+          [[ -s "$expected_paths" ]] || { echo 'Validated apply did not provide changed paths.' >&2; exit 1; }
+
+          {
+            git diff --name-only
+            git ls-files --others --exclude-standard
+          } | LC_ALL=C sort -u > "$actual_paths"
+          cmp -s "$expected_paths" "$actual_paths" || {
+            echo 'Working tree changed after validated apply; refusing to commit unexpected files.' >&2
+            diff -u "$expected_paths" "$actual_paths" || true
+            exit 1
+          }
+
+          changed_files=()
+          while IFS= read -r file; do changed_files+=("$file"); done < "$expected_paths"
+          (( ${#changed_files[@]} > 0 )) || { echo 'No validated changes to commit.' >&2; exit 1; }
+          git add -- "${changed_files[@]}"
+          git diff --cached --name-only | LC_ALL=C sort -u > "$sync_dir/staged-paths.txt"
+          cmp -s "$expected_paths" "$sync_dir/staged-paths.txt" || {
+            echo 'The staged diff does not exactly match the validated changed paths.' >&2
+            exit 1
+          }
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Sync Unity ${unity_head:0:7} changes to Swift" \
+            -m "Unity-Head: ${unity_head}"
+          # Do not use github.token: pushes made with it suppress the ordinary
+          # pull_request workflow. This repository secret belongs to a GitHub App
+          # or bot PAT with only contents/pull-request write access.
+          git push "https://x-access-token:${UNITY_SWIFT_SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${sync_branch}"
+
+      - name: Create or find sync pull request
+        id: pr
+        if: steps.preflight.outputs.status == 'ready'
+        env:
+          GH_TOKEN: ${{ secrets.UNITY_SWIFT_SYNC_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --head "$sync_branch" --base main --state open --json number,url --jq '.[0]')"
+          if [[ "$existing" != "null" && -n "$existing" ]]; then
+            echo "url=$(printf '%s' "$existing" | jq -r '.url')" >> "$GITHUB_OUTPUT"
+            echo "number=$(printf '%s' "$existing" | jq -r '.number')" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          body="$RUNNER_TEMP/unity-swift-sync-validation/pr-body.md"
+          detector_report="$RUNNER_TEMP/unity-swift-sync-input/unity-swift-change-report.md"
+          unity_range="$(sed -nE 's/^- (Unity )?[Rr]ange:[[:space:]]*`?([^`]+)`?.*/\2/p' "$detector_report" | head -n 1)"
+          [[ -n "$unity_range" ]] || unity_range="baseline..${unity_head} (see detector artifact)"
+          {
+            echo '## Unity → Swift validated sync proposal'
+            echo
+            echo "- Unity commit range: \`${unity_range}\`"
+            echo "- Unity target: \`${unity_head}\`"
+            echo '- Base: `main`'
+            echo "- Branch: \`${sync_branch}\`"
+            echo '- Manual review and approval are required; auto-merge is disabled.'
+            echo '- `.sync/unity-last-synced-commit` must not be updated until this PR is manually merged.'
+            echo
+            echo '## Semantic / port-plan source item IDs'
+            jq -r '.items[] | "- \(.id)"' "$RUNNER_TEMP/unity-swift-sync-input/unity-swift-port-plan.json"
+            echo
+            echo '## Patch-ready port-plan items'
+            jq -r '.items[] | select(.patch_ready == true) | "- \(.id): " + ([.target_swift_files_symbols[]] | join(", "))' "$RUNNER_TEMP/unity-swift-sync-input/unity-swift-port-plan.json"
+            echo
+            echo '## Patch proposal summary and risks'
+            jq -r '.items[] | "- \(.id): risk=\(.risk_level); " + (.exact_proposed_changes | join("; "))' "$RUNNER_TEMP/unity-swift-sync-input/patch-proposal.json"
+            echo
+            echo '## Blockers'
+            jq -r '[.items[].blockers[]] | if length == 0 then "- None" else .[] | "- " + . end' "$RUNNER_TEMP/unity-swift-sync-input/unity-swift-port-plan.json"
+            echo
+            echo '## Changed Swift files'
+            git diff --name-only origin/main..."$pr_ref" | sed 's/^/- `&`/'
+            echo
+            echo '## Tests executed'
+            echo '- Static shell/YAML/diff validation'
+            echo '- iOS Simulator build'
+            echo '- Required default XCTest suite'
+            echo '- Required PR check is awaited below; the PR is never auto-merged.'
+          } > "$body"
+          pr_url="$(gh pr create --base main --head "$sync_branch" --title "Sync Unity ${unity_head:0:7} changes to Swift" --body-file "$body")"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "number=$(gh pr view "$pr_url" --json number --jq '.number')" >> "$GITHUB_OUTPUT"
+
+      - name: Verify auto-created PR receives the required CI check
+        id: pr-required-ci
+        if: steps.preflight.outputs.status == 'ready'
+        env:
+          GH_TOKEN: ${{ secrets.UNITY_SWIFT_SYNC_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          required_name='Required iOS Simulator XCTest'
+          pr_number='${{ steps.pr.outputs.number }}'
+          [[ -n "$pr_number" ]] || { echo 'Sync PR number was not available.' >&2; exit 1; }
+
+          for attempt in {1..36}; do
+            checks="$(gh pr checks "$pr_number" --json name,state,link 2>/dev/null || true)"
+            state="$(printf '%s' "$checks" | jq -r --arg name "$required_name" '[.[] | select(.name == $name)] | last | .state // empty')"
+            case "$state" in
+              SUCCESS)
+                echo 'state=success' >> "$GITHUB_OUTPUT"
+                exit 0
+                ;;
+              FAILURE|CANCELLED|TIMED_OUT|ACTION_REQUIRED)
+                echo "Required PR check ${required_name} completed with ${state}." >&2
+                exit 1
+                ;;
+              *)
+                echo "Waiting for required PR check ${required_name} (state=${state:-not-published})."
+                sleep 20
+                ;;
+            esac
+          done
+
+          echo "Required PR check ${required_name} was not published within 12 minutes. This usually means the automation credential did not trigger pull_request CI." >&2
+          exit 1
+
+      - name: Publish sync summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# Unity → Swift sync apply'
+            echo
+            if [[ -f "$RUNNER_TEMP/unity-swift-sync-validation/sync-validation-report.md" ]]; then
+              cat "$RUNNER_TEMP/unity-swift-sync-validation/sync-validation-report.md"
+            fi
+            if [[ -n "${{ steps.pr.outputs.url }}" ]]; then
+              echo
+              echo "PR: ${{ steps.pr.outputs.url }}"
+            fi
+            if [[ -n "${{ steps.pr-required-ci.outputs.state }}" ]]; then
+              echo "Required PR CI: ${{ steps.pr-required-ci.outputs.state }}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload sync diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-swift-sync-validation
+          path: |
+            ${{ runner.temp }}/unity-swift-sync-validation
+          if-no-files-found: warn
+          retention-days: 30
