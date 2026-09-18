@@ -1,0 +1,233 @@
+name: Advance Unity sync baseline after merged sync PR
+
+on:
+  pull_request:
+    types: [closed]
+
+# github.token remains read-only. The only write credential is the explicitly
+# scoped UNITY_SWIFT_SYNC_TOKEN, used solely for the baseline branch and PR.
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: unity-swift-baseline-${{ github.event.pull_request.number }}
+  cancel-in-progress: false
+
+jobs:
+  baseline-pr:
+    name: Verify merged Unity sync and propose baseline update
+    if: >-
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      startsWith(github.event.pull_request.head.ref, 'sync/unity-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout current Swift main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch merged source sync tip from pull request ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          pr_number='${{ github.event.pull_request.number }}'
+          git fetch origin "refs/pull/${pr_number}/head:refs/remotes/origin/merged-sync-pr-${pr_number}"
+
+      - name: Clone Unity main with history for ancestry validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --branch main --single-branch \
+            https://github.com/zey-win/ZeyWinAdsSDK-Unity.git \
+            "$RUNNER_TEMP/ZeyWinAdsSDK-Unity"
+
+      - name: Validate merged sync identity and Unity ancestry
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          validation_dir="$RUNNER_TEMP/unity-swift-baseline-validation"
+          mkdir -p "$validation_dir"
+          source_branch='${{ github.event.pull_request.head.ref }}'
+          source_ref='origin/merged-sync-pr-${{ github.event.pull_request.number }}'
+          bash scripts/unity_swift_baseline_update.sh \
+            --mode validate \
+            --swift-repo . \
+            --unity-repo "$RUNNER_TEMP/ZeyWinAdsSDK-Unity" \
+            --source-ref "$source_ref" \
+            --source-branch "$source_branch" \
+            --report-output "$validation_dir/baseline-validation.json"
+          echo "status=$(jq -r '.status' "$validation_dir/baseline-validation.json")" >> "$GITHUB_OUTPUT"
+          echo "old_baseline=$(jq -r '.old_baseline' "$validation_dir/baseline-validation.json")" >> "$GITHUB_OUTPUT"
+          echo "unity_head=$(jq -r '.new_baseline' "$validation_dir/baseline-validation.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Require baseline automation token
+        if: steps.validate.outputs.status == 'ready'
+        shell: bash
+        env:
+          UNITY_SWIFT_SYNC_TOKEN: ${{ secrets.UNITY_SWIFT_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          [[ -n "$UNITY_SWIFT_SYNC_TOKEN" ]] || {
+            echo 'UNITY_SWIFT_SYNC_TOKEN is required to create the baseline-only branch and PR.' >&2
+            exit 1
+          }
+
+      - name: Prepare or verify baseline branch
+        id: branch
+        if: steps.validate.outputs.status == 'ready'
+        shell: bash
+        run: |
+          set -euo pipefail
+          unity_head='${{ steps.validate.outputs.unity_head }}'
+          short_sha="${unity_head:0:7}"
+          baseline_branch="sync/baseline-${short_sha}"
+          expected_subject="Advance Unity sync baseline to ${short_sha}"
+          baseline_file='.sync/unity-last-synced-commit'
+
+          git fetch origin main
+          [[ "$(git rev-parse HEAD)" == "$(git rev-parse origin/main)" ]] || {
+            echo 'Checkout is not based on current origin/main.' >&2
+            exit 1
+          }
+          [[ -z "$(git status --porcelain=v1 --untracked-files=all)" ]] || {
+            echo 'Checkout is not clean before baseline branch preparation.' >&2
+            exit 1
+          }
+
+          echo "baseline_branch=$baseline_branch" >> "$GITHUB_ENV"
+          echo "short_sha=$short_sha" >> "$GITHUB_ENV"
+          echo "branch=$baseline_branch" >> "$GITHUB_OUTPUT"
+
+          if git ls-remote --exit-code --heads origin "refs/heads/$baseline_branch" > /dev/null; then
+            git fetch origin "refs/heads/$baseline_branch:refs/remotes/origin/$baseline_branch"
+            [[ "$(git log -1 --format=%s "origin/$baseline_branch")" == "$expected_subject" ]] || {
+              echo 'Existing baseline branch has an unexpected tip commit subject.' >&2
+              exit 1
+            }
+            [[ "$(git show "origin/$baseline_branch:$baseline_file" | tr -d '[:space:]')" == "$unity_head" ]] || {
+              echo 'Existing baseline branch does not contain the expected baseline SHA.' >&2
+              exit 1
+            }
+            [[ "$(git diff --name-only "origin/main...origin/$baseline_branch")" == "$baseline_file" ]] || {
+              echo 'Existing baseline branch changes files other than the baseline.' >&2
+              exit 1
+            }
+            [[ "$(git rev-list --count "origin/main..origin/$baseline_branch")" == "1" ]] || {
+              echo 'Existing baseline branch does not contain exactly one baseline commit.' >&2
+              exit 1
+            }
+            echo 'state=verified_existing' >> "$GITHUB_OUTPUT"
+            echo "baseline_ref=origin/$baseline_branch" >> "$GITHUB_ENV"
+            exit 0
+          fi
+
+          git switch -c "$baseline_branch"
+          echo 'state=new' >> "$GITHUB_OUTPUT"
+          echo 'baseline_ref=HEAD' >> "$GITHUB_ENV"
+
+      - name: Prepare baseline-only file change
+        if: steps.validate.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
+        shell: bash
+        run: |
+          set -euo pipefail
+          validation_dir="$RUNNER_TEMP/unity-swift-baseline-validation"
+          bash scripts/unity_swift_baseline_update.sh \
+            --mode prepare \
+            --swift-repo . \
+            --unity-repo "$RUNNER_TEMP/ZeyWinAdsSDK-Unity" \
+            --source-ref "origin/merged-sync-pr-${{ github.event.pull_request.number }}" \
+            --source-branch "${{ github.event.pull_request.head.ref }}" \
+            --report-output "$validation_dir/baseline-prepared.json"
+          [[ "$(git diff --name-only)" == '.sync/unity-last-synced-commit' ]] || {
+            echo 'Baseline preparation changed an unexpected path.' >&2
+            exit 1
+          }
+
+      - name: Commit and push baseline-only branch
+        if: steps.validate.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
+        shell: bash
+        env:
+          UNITY_SWIFT_SYNC_TOKEN: ${{ secrets.UNITY_SWIFT_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          baseline_file='.sync/unity-last-synced-commit'
+          [[ "$(git diff --name-only)" == "$baseline_file" ]] || {
+            echo 'Refusing to commit a non-baseline change.' >&2
+            exit 1
+          }
+          git add -- "$baseline_file"
+          [[ "$(git diff --cached --name-only)" == "$baseline_file" ]] || {
+            echo 'Staged changes are not baseline-only.' >&2
+            exit 1
+          }
+          git -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' \
+            commit -m "Advance Unity sync baseline to ${short_sha}"
+          git push "https://x-access-token:${UNITY_SWIFT_SYNC_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" \
+            "HEAD:refs/heads/${baseline_branch}"
+
+      - name: Create or find baseline-only pull request
+        id: pr
+        if: steps.validate.outputs.status == 'ready'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.UNITY_SWIFT_SYNC_TOKEN }}
+        run: |
+          set -euo pipefail
+          existing="$(gh pr list --head "$baseline_branch" --base main --state open --json number,url --jq '.[0]')"
+          if [[ "$existing" != "null" && -n "$existing" ]]; then
+            echo "url=$(printf '%s' "$existing" | jq -r '.url')" >> "$GITHUB_OUTPUT"
+            echo "number=$(printf '%s' "$existing" | jq -r '.number')" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          body="$RUNNER_TEMP/unity-swift-baseline-validation/pr-body.md"
+          {
+            echo '## Unity sync baseline update'
+            echo
+            echo "- Merged source sync PR: #${{ github.event.pull_request.number }} (${{ github.event.pull_request.html_url }})"
+            echo "- Old baseline: \`${{ steps.validate.outputs.old_baseline }}\`"
+            echo "- New verified Unity main SHA: \`${{ steps.validate.outputs.unity_head }}\`"
+            echo '- Verification: source trailer, SHA7 branch match, Unity `main` membership, and forward ancestry passed.'
+            echo '- This is a baseline-only change: no production Swift files are modified.'
+            echo '- Manual review and merge remain required.'
+          } > "$body"
+          pr_url="$(gh pr create --base main --head "$baseline_branch" --title "Advance Unity sync baseline to ${short_sha}" --body-file "$body")"
+          echo "url=$pr_url" >> "$GITHUB_OUTPUT"
+          echo "number=$(gh pr view "$pr_url" --json number --jq '.number')" >> "$GITHUB_OUTPUT"
+
+      - name: Publish baseline update summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo '# Unity → Swift baseline update'
+            echo
+            if [[ -f "$RUNNER_TEMP/unity-swift-baseline-validation/baseline-validation.json" ]]; then
+              jq . "$RUNNER_TEMP/unity-swift-baseline-validation/baseline-validation.json"
+            fi
+            if [[ -f "$RUNNER_TEMP/unity-swift-baseline-validation/baseline-prepared.json" ]]; then
+              echo
+              jq . "$RUNNER_TEMP/unity-swift-baseline-validation/baseline-prepared.json"
+            fi
+            if [[ -n "${{ steps.pr.outputs.url }}" ]]; then
+              echo
+              echo "Baseline PR: ${{ steps.pr.outputs.url }}"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload baseline validation diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-swift-baseline-validation-${{ github.event.pull_request.number }}
+          path: ${{ runner.temp }}/unity-swift-baseline-validation
+          if-no-files-found: warn
+          retention-days: 30
