@@ -1,0 +1,88 @@
+name: Required Unity baseline PR validation
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: read
+  actions: read
+
+concurrency:
+  group: unity-swift-baseline-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  validate-baseline-pr:
+    name: Required Unity baseline PR validation
+    if: startsWith(github.event.pull_request.head.ref, 'sync/baseline-')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout baseline PR head
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch current main after checkout
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch origin main:refs/remotes/origin/main
+
+      - name: Clone Unity main with history for ancestry validation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git clone --branch main --single-branch \
+            https://github.com/zey-win/ZeyWinAdsSDK-Unity.git \
+            "$RUNNER_TEMP/ZeyWinAdsSDK-Unity"
+
+      - name: Validate current main against baseline PR proposal
+        id: validate
+        shell: bash
+        run: |
+          set -euo pipefail
+          output_dir="$RUNNER_TEMP/unity-swift-baseline-pr-validation"
+          mkdir -p "$output_dir"
+          bash scripts/unity_swift_baseline_pr_validate.sh \
+            --swift-repo . \
+            --unity-repo "$RUNNER_TEMP/ZeyWinAdsSDK-Unity" \
+            --main-ref origin/main \
+            --branch-ref HEAD \
+            --branch-name "${{ github.event.pull_request.head.ref }}" \
+            --report-output "$output_dir/validation.json"
+          echo "status=$(jq -r '.status' "$output_dir/validation.json")" >> "$GITHUB_OUTPUT"
+
+      - name: Block an obsolete no-op baseline PR
+        if: steps.validate.outputs.status == 'no_op'
+        shell: bash
+        run: |
+          echo 'Current main already has this baseline. Close the obsolete PR; do not merge it.' >&2
+          exit 1
+
+      - name: Publish validation summary
+        if: always()
+        shell: bash
+        run: |
+          if [[ -f "$RUNNER_TEMP/unity-swift-baseline-pr-validation/validation.json" ]]; then
+            {
+              echo '# Unity baseline PR validation'
+              echo
+              jq . "$RUNNER_TEMP/unity-swift-baseline-pr-validation/validation.json"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Upload validation diagnostic
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: unity-swift-baseline-pr-validation-${{ github.event.pull_request.number }}
+          path: ${{ runner.temp }}/unity-swift-baseline-pr-validation
+          if-no-files-found: warn
+          retention-days: 14
