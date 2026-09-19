@@ -141,11 +141,16 @@ jobs:
           echo 'pr_url=' >> "$GITHUB_OUTPUT"
 
           pr_has_expected_identity() {
-            local head_sha="$1" message trailers trailer_count
+            local head_sha="$1" message raw_trailers raw_trailer_count parsed_trailers parsed_trailer_count
             message="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}" --jq '.commit.message')"
-            trailers="$(printf '%s\n' "$message" | git interpret-trailers --parse | awk -F': ' '$1 == "Unity-Head" { print $2 }')"
-            trailer_count="$(printf '%s\n' "$trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
-            [[ "$trailer_count" == 1 && "$trailers" == "$unity_head" ]]
+            # Git's parsed trailer view coalesces duplicate identical values. The
+            # raw count is required before an existing PR can suppress a sync run.
+            raw_trailers="$(printf '%s\n' "$message" | awk '/^Unity-Head:[[:space:]]*/ { sub(/^Unity-Head:[[:space:]]*/, ""); print }')"
+            raw_trailer_count="$(printf '%s\n' "$raw_trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
+            parsed_trailers="$(printf '%s\n' "$message" | git interpret-trailers --parse | awk -F': ' '$1 == "Unity-Head" { print $2 }')"
+            parsed_trailer_count="$(printf '%s\n' "$parsed_trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
+            [[ "$raw_trailer_count" == 1 && "$raw_trailers" == "$unity_head" \
+              && "$parsed_trailer_count" == 1 && "$parsed_trailers" == "$unity_head" ]]
           }
 
           for state in open merged; do

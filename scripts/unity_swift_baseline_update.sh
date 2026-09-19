@@ -91,11 +91,17 @@ old_baseline="$(tr -d '[:space:]' < "$baseline_file")"
 [[ "$old_baseline" =~ ^[0-9a-f]{40}$ ]] \
     || fail "Current baseline is not a lowercase 40-character SHA."
 
-trailers="$(git -C "$swift_repo" log -1 --format=%B "$source_ref" | git interpret-trailers --parse | awk -F': ' '$1 == "Unity-Head" { print $2 }')"
-trailer_count="$(printf '%s\n' "$trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
-[[ "$trailer_count" == "1" && "$trailers" =~ ^[0-9a-f]{40}$ ]] \
+message="$(git -C "$swift_repo" log -1 --format=%B "$source_ref")"
+# `interpret-trailers --parse` de-duplicates equal trailers. The raw count keeps
+# this baseline gate strict when a commit contains duplicate Unity-Head lines.
+raw_trailers="$(printf '%s\n' "$message" | awk '/^Unity-Head:[[:space:]]*/ { sub(/^Unity-Head:[[:space:]]*/, ""); print }')"
+raw_trailer_count="$(printf '%s\n' "$raw_trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
+parsed_trailers="$(printf '%s\n' "$message" | git interpret-trailers --parse | awk -F': ' '$1 == "Unity-Head" { print $2 }')"
+parsed_trailer_count="$(printf '%s\n' "$parsed_trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
+[[ "$raw_trailer_count" == "1" && "$raw_trailers" =~ ^[0-9a-f]{40}$ \
+    && "$parsed_trailer_count" == "1" && "$parsed_trailers" == "$raw_trailers" ]] \
     || fail "Source sync commit must contain exactly one lowercase 40-character Unity-Head trailer."
-unity_head="$trailers"
+unity_head="$raw_trailers"
 
 expected_short_sha="${unity_head:0:7}"
 [[ "$source_branch" == "sync/unity-${expected_short_sha}" ]] \

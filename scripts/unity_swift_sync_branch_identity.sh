@@ -40,10 +40,17 @@ git -C "$repo_root" rev-parse --verify --quiet "${ref}^{commit}" > /dev/null || 
     exit 3
 }
 
-trailers="$(git -C "$repo_root" log -1 --format=%B "$ref" | git interpret-trailers --parse | awk -F': ' '$1 == "Unity-Head" { print $2 }')"
-trailer_count="$(printf '%s\n' "$trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
+message="$(git -C "$repo_root" log -1 --format=%B "$ref")"
+# `interpret-trailers --parse` coalesces duplicate identical trailers. Count the
+# raw trailer lines as well, otherwise two Unity-Head lines could be accepted as
+# one. Keeping the parsed check ensures the raw line is also a Git trailer.
+raw_trailers="$(printf '%s\n' "$message" | awk '/^Unity-Head:[[:space:]]*/ { sub(/^Unity-Head:[[:space:]]*/, ""); print }')"
+raw_trailer_count="$(printf '%s\n' "$raw_trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
+parsed_trailers="$(printf '%s\n' "$message" | git interpret-trailers --parse | awk -F': ' '$1 == "Unity-Head" { print $2 }')"
+parsed_trailer_count="$(printf '%s\n' "$parsed_trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
 
-if [[ "$trailer_count" != "1" || "$trailers" != "$unity_head" ]]; then
+if [[ "$raw_trailer_count" != "1" || "$raw_trailers" != "$unity_head" \
+    || "$parsed_trailer_count" != "1" || "$parsed_trailers" != "$unity_head" ]]; then
     echo "${ref} is not verified for Unity head ${unity_head}." >&2
     exit 4
 fi
