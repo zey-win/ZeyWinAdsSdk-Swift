@@ -13,15 +13,18 @@ on:
         required: false
         type: string
   schedule:
-    # A read-only daily poll is required because Unity main is in another repository.
-    - cron: '23 3 * * *'
+    # Swift-only polling compares the committed baseline to current Unity main.
+    - cron: '17 * * * *'
 
 permissions:
   contents: read
+  pull-requests: read
   actions: read
 
 concurrency:
-  group: unity-swift-semantic-analysis-${{ github.ref }}
+  # One group for manual and scheduled runs prevents two pipelines from entering
+  # the branch/PR write stage simultaneously. Never cancel a run mid-write.
+  group: unity-swift-sync-pipeline
   cancel-in-progress: false
 
 jobs:
@@ -29,6 +32,14 @@ jobs:
     name: Report Unity main semantic parity for Swift review
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    outputs:
+      trigger_type: ${{ steps.polling-context.outputs.trigger_type }}
+      baseline: ${{ steps.polling-context.outputs.baseline }}
+      unity_head: ${{ steps.polling-context.outputs.unity_head }}
+      range: ${{ steps.polling-context.outputs.range }}
+      detector_status: ${{ steps.detector-status.outputs.status }}
+      pipeline_state: ${{ steps.pending-sync.outputs.state }}
+      pending_sync_pr: ${{ steps.pending-sync.outputs.pr_url }}
 
     steps:
       - name: Checkout Swift repository
@@ -42,6 +53,43 @@ jobs:
             https://github.com/zey-win/ZeyWinAdsSDK-Unity.git \
             "$RUNNER_TEMP/ZeyWinAdsSDK-Unity"
 
+      - name: Inspect Swift-only polling range
+        id: polling-context
+        shell: bash
+        env:
+          FROM_COMMIT: ${{ inputs.from_commit }}
+        run: |
+          set -euo pipefail
+          if [[ "${{ github.event_name }}" == 'workflow_dispatch' ]]; then
+            trigger_type=manual
+          else
+            trigger_type=scheduled
+          fi
+
+          baseline="$(tr -d '[:space:]' < .sync/unity-last-synced-commit)"
+          unity_head="$(git -C "$RUNNER_TEMP/ZeyWinAdsSDK-Unity" rev-parse HEAD)"
+          range_from="$baseline"
+          if [[ -z "$FROM_COMMIT" ]]; then
+            [[ "$baseline" =~ ^[0-9a-f]{40}$ ]] || {
+              echo 'Swift baseline is not a lowercase 40-character SHA.' >&2
+              exit 1
+            }
+            git -C "$RUNNER_TEMP/ZeyWinAdsSDK-Unity" cat-file -e "${baseline}^{commit}" 2> /dev/null || {
+              echo 'Swift baseline is not available in the cloned Unity repository.' >&2
+              exit 1
+            }
+            git -C "$RUNNER_TEMP/ZeyWinAdsSDK-Unity" merge-base --is-ancestor "$baseline" "$unity_head" || {
+              echo 'Swift baseline is not an ancestor of current Unity main.' >&2
+              exit 1
+            }
+          else
+            range_from="$FROM_COMMIT"
+          fi
+          echo "trigger_type=$trigger_type" >> "$GITHUB_OUTPUT"
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+          echo "unity_head=$unity_head" >> "$GITHUB_OUTPUT"
+          echo "range=${range_from}..${unity_head}" >> "$GITHUB_OUTPUT"
+
       - name: Generate report-only detector input
         id: detector
         continue-on-error: true
@@ -53,6 +101,7 @@ jobs:
           args=(
             --unity-dir "$RUNNER_TEMP/ZeyWinAdsSDK-Unity"
             --output "$RUNNER_TEMP/unity-swift-change-report.md"
+            --status-output "$RUNNER_TEMP/unity-swift-detector-status"
           )
 
           if [[ -n "$FROM_COMMIT" ]]; then
@@ -60,6 +109,73 @@ jobs:
           fi
 
           bash scripts/unity_swift_change_detector.sh "${args[@]}"
+
+      - name: Record detector status
+        id: detector-status
+        if: always()
+        shell: bash
+        run: |
+          set -euo pipefail
+          status=unavailable
+          if [[ -f "$RUNNER_TEMP/unity-swift-detector-status" ]]; then
+            status="$(tr -d '[:space:]' < "$RUNNER_TEMP/unity-swift-detector-status")"
+          fi
+          case "$status" in
+            changes|no_op|bootstrap|unavailable) ;;
+            *) status=unavailable ;;
+          esac
+          echo "status=$status" >> "$GITHUB_OUTPUT"
+
+      - name: Detect a pending verified sync PR
+        id: pending-sync
+        if: steps.detector.outcome == 'success' && steps.detector-status.outputs.status == 'changes'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          unity_head='${{ steps.polling-context.outputs.unity_head }}'
+          short_sha="${unity_head:0:7}"
+          sync_branch="sync/unity-${short_sha}"
+          echo 'state=ready' >> "$GITHUB_OUTPUT"
+          echo 'pr_url=' >> "$GITHUB_OUTPUT"
+
+          pr_has_expected_identity() {
+            local head_sha="$1" message trailers trailer_count
+            message="$(gh api "repos/${GITHUB_REPOSITORY}/commits/${head_sha}" --jq '.commit.message')"
+            trailers="$(printf '%s\n' "$message" | git interpret-trailers --parse | awk -F': ' '$1 == "Unity-Head" { print $2 }')"
+            trailer_count="$(printf '%s\n' "$trailers" | sed '/^$/d' | wc -l | tr -d ' ')"
+            [[ "$trailer_count" == 1 && "$trailers" == "$unity_head" ]]
+          }
+
+          for state in open merged; do
+            existing="$(gh pr list --head "$sync_branch" --base main --state "$state" --json url,headRefOid --jq '.[0]')"
+            if [[ "$existing" == null || -z "$existing" ]]; then
+              continue
+            fi
+            existing_url="$(printf '%s' "$existing" | jq -r '.url')"
+            existing_head="$(printf '%s' "$existing" | jq -r '.headRefOid')"
+            if pr_has_expected_identity "$existing_head"; then
+              if [[ "$state" == open ]]; then
+                echo 'state=pending_sync_pr' >> "$GITHUB_OUTPUT"
+              else
+                echo 'state=pending_baseline_pr' >> "$GITHUB_OUTPUT"
+              fi
+              echo "pr_url=$existing_url" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            echo "Existing ${state} PR ${existing_url} does not prove current Unity target identity; it will not suppress this run." >&2
+          done
+
+          if ! git ls-remote --exit-code --heads origin "refs/heads/$sync_branch" > /dev/null; then
+            exit 0
+          fi
+          git fetch origin "refs/heads/$sync_branch:refs/remotes/origin/$sync_branch"
+          if ! bash scripts/unity_swift_sync_branch_identity.sh \
+            --repo-root . --ref "origin/$sync_branch" --unity-head "$unity_head"; then
+            echo "Existing $sync_branch cannot be proven to belong to current Unity main; leaving normal safeguards to fail safely." >&2
+            exit 0
+          fi
 
       - name: Write detector failure report
         if: steps.detector.outcome != 'success'
@@ -77,7 +193,10 @@ jobs:
 
       - name: Run report-only AI semantic analysis
         id: semantic
-        if: steps.detector.outcome == 'success'
+        if: >-
+          steps.detector.outcome == 'success' &&
+          steps.detector-status.outputs.status == 'changes' &&
+          steps.pending-sync.outputs.state == 'ready'
         continue-on-error: true
         shell: bash
         env:
@@ -96,6 +215,18 @@ jobs:
         run: |
           {
             echo '# Unity → Swift sync reports'
+            echo
+            echo '## Polling context'
+            echo
+            echo "- Trigger: \`${{ steps.polling-context.outputs.trigger_type }}\`"
+            echo "- Baseline: \`${{ steps.polling-context.outputs.baseline }}\`"
+            echo "- Unity main: \`${{ steps.polling-context.outputs.unity_head }}\`"
+            echo "- Range: \`${{ steps.polling-context.outputs.range }}\`"
+            echo "- Detector: \`${{ steps.detector-status.outputs.status }}\`"
+            echo "- Semantic: \`${{ steps.semantic.outcome == 'success' && 'ran' || 'skipped' }}\`"
+            if [[ -n "${{ steps.pending-sync.outputs.pr_url }}" ]]; then
+              echo "- Pending sync: ${{ steps.pending-sync.outputs.pr_url }} (${{ steps.pending-sync.outputs.state }})"
+            fi
             echo
             echo '## Detector report'
             if [[ -f "$RUNNER_TEMP/unity-swift-change-report.md" ]]; then
@@ -133,7 +264,10 @@ jobs:
   port-plan:
     name: Generate Swift port plan from semantic report
     needs: semantic-report
-    if: needs.semantic-report.result == 'success'
+    if: >-
+      needs.semantic-report.result == 'success' &&
+      needs.semantic-report.outputs.detector_status == 'changes' &&
+      needs.semantic-report.outputs.pipeline_state == 'ready'
     runs-on: ubuntu-latest
     timeout-minutes: 12
     outputs:
@@ -411,9 +545,11 @@ jobs:
           bash -n scripts/unity_swift_apply_validated_patch.sh
           bash -n scripts/unity_swift_sync_branch_identity.sh
           bash -n scripts/test_unity_swift_sync_safeguards.sh
+          bash -n scripts/test_unity_swift_polling_safeguards.sh
           ruby -e 'require "yaml"; YAML.load_file(".github/workflows/unity-swift-semantic-analysis.yml")'
           git diff --check
           bash scripts/test_unity_swift_sync_safeguards.sh
+          bash scripts/test_unity_swift_polling_safeguards.sh
 
       - name: Select and boot an available iPhone Simulator
         if: steps.preflight.outputs.status == 'ready' && steps.branch.outputs.state == 'new'
@@ -610,3 +746,51 @@ jobs:
             ${{ runner.temp }}/unity-swift-sync-validation
           if-no-files-found: warn
           retention-days: 30
+
+  polling-summary:
+    name: Summarize Unity to Swift polling run
+    needs: [semantic-report, port-plan, patch-proposal, sync-apply]
+    if: always()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+      actions: read
+
+    steps:
+      - name: Publish pipeline summary
+        shell: bash
+        env:
+          TRIGGER_TYPE: ${{ needs.semantic-report.outputs.trigger_type }}
+          BASELINE: ${{ needs.semantic-report.outputs.baseline }}
+          UNITY_HEAD: ${{ needs.semantic-report.outputs.unity_head }}
+          UNITY_RANGE: ${{ needs.semantic-report.outputs.range }}
+          DETECTOR_STATUS: ${{ needs.semantic-report.outputs.detector_status }}
+          PIPELINE_STATE: ${{ needs.semantic-report.outputs.pipeline_state }}
+          PENDING_SYNC_PR: ${{ needs.semantic-report.outputs.pending_sync_pr }}
+          SEMANTIC_RESULT: ${{ needs.semantic-report.result }}
+          PORT_PLAN_RESULT: ${{ needs.port-plan.result }}
+          PATCH_PROPOSAL_RESULT: ${{ needs.patch-proposal.result }}
+          SYNC_APPLY_RESULT: ${{ needs.sync-apply.result }}
+        run: |
+          set -euo pipefail
+          semantic_state=skipped
+          [[ "$DETECTOR_STATUS" == changes && "$PIPELINE_STATE" == ready ]] && semantic_state="$SEMANTIC_RESULT"
+          {
+            echo '# Unity → Swift polling summary'
+            echo
+            echo "- Trigger: \`${TRIGGER_TYPE:-unknown}\`"
+            echo "- Baseline: \`${BASELINE:-unavailable}\`"
+            echo "- Unity main: \`${UNITY_HEAD:-unavailable}\`"
+            echo "- Range: \`${UNITY_RANGE:-unavailable}\`"
+            echo "- Detector: \`${DETECTOR_STATUS:-unavailable}\`"
+            echo "- Semantic: \`${semantic_state}\`"
+            echo "- Port plan: \`${PORT_PLAN_RESULT}\`"
+            echo "- Patch proposal: \`${PATCH_PROPOSAL_RESULT}\`"
+            echo "- Sync apply: \`${SYNC_APPLY_RESULT}\`"
+            if [[ -n "$PENDING_SYNC_PR" ]]; then
+              echo "- Pending sync PR: ${PENDING_SYNC_PR} (${PIPELINE_STATE})"
+            else
+              echo '- Pending sync PR: none'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
