@@ -11,6 +11,7 @@ state_file="$repo_root/.sync/unity-last-synced-commit"
 output_file="$repo_root/unity-swift-change-report.md"
 from_commit=""
 to_ref="origin/main"
+status_output=""
 
 usage() {
     cat <<'EOF'
@@ -23,6 +24,7 @@ Options:
   --to <ref>            Unity target ref. Default: origin/main.
   --state-file <path>   Default: .sync/unity-last-synced-commit.
   --output <path>       Default: unity-swift-change-report.md.
+  --status-output <path>  Write changes, no_op, bootstrap, or unavailable.
   -h, --help            Show this message.
 
 The state file must contain one manually reviewed Unity commit. If it is UNSET,
@@ -53,6 +55,10 @@ while [[ $# -gt 0 ]]; do
             output_file="$2"
             shift 2
             ;;
+        --status-output)
+            status_output="$2"
+            shift 2
+            ;;
         -h|--help)
             usage
             exit 0
@@ -71,6 +77,8 @@ if [[ -z "$unity_dir" ]] || [[ ! -d "$unity_dir/.git" ]]; then
 fi
 
 mkdir -p "$(dirname "$output_file")"
+[[ -z "$status_output" ]] || mkdir -p "$(dirname "$status_output")"
+write_status() { [[ -z "$status_output" ]] || printf '%s\n' "$1" > "$status_output"; }
 
 if [[ -z "$from_commit" ]] && [[ -f "$state_file" ]]; then
     from_commit="$(awk '!/^[[:space:]]*(#|$)/ { print; exit }' "$state_file")"
@@ -106,6 +114,7 @@ EOF
     } > "$output_file"
 
     echo "Wrote bootstrap report: $output_file"
+    write_status bootstrap
     exit 0
 fi
 
@@ -125,6 +134,7 @@ Fetch the commit into the clone or provide a reachable \`--from <commit>\`.
 EOF
     } > "$output_file"
     echo "Unity baseline is unavailable: $from_commit" >&2
+    write_status unavailable
     exit 2
 fi
 
@@ -318,5 +328,11 @@ EOF
 - Update \`${state_file#$repo_root/}\` manually only after the report has been reviewed and all required Swift parity work is complete.
 EOF
 } > "$output_file"
+
+if [[ -s "$changed_files_file" ]]; then
+    write_status changes
+else
+    write_status no_op
+fi
 
 echo "Wrote report: $output_file"
