@@ -300,7 +300,8 @@ jobs:
           bash scripts/unity_swift_port_plan.sh \
             --semantic-report "$RUNNER_TEMP/unity-swift-semantic-artifact/unity-swift-semantic-analysis.md" \
             --markdown-output "$RUNNER_TEMP/unity-swift-port-plan.md" \
-            --json-output "$RUNNER_TEMP/unity-swift-port-plan.json"
+            --json-output "$RUNNER_TEMP/unity-swift-port-plan.json" \
+            --diagnostics-output "$RUNNER_TEMP/unity-swift-port-plan-diagnostics.json"
 
       - name: Detect ready port plan for patch proposal
         id: patch-proposal-gate
@@ -342,6 +343,7 @@ jobs:
           path: |
             ${{ runner.temp }}/unity-swift-port-plan.md
             ${{ runner.temp }}/unity-swift-port-plan.json
+            ${{ runner.temp }}/unity-swift-port-plan-diagnostics.json
           if-no-files-found: warn
           retention-days: 30
 
