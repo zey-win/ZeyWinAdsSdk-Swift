@@ -349,9 +349,16 @@ when every target_swift_files_symbols entry is a concrete repo-relative path und
 Sources/ZeyWinSDK/ or Tests/ZeyWinSDKTests/ (or Package.swift when explicitly
 required), and no target-mapping blocker remains. Do not put prose, explanations,
 "Human mapping required", assumptions, or blockers in target_swift_files_symbols.
-When a concrete Swift target cannot be confirmed, return
-target_swift_files_symbols: [], patch_ready: false, and a non-empty blockers
-array that states the unresolved contract or integration decision.
+Use exactly this target format: `Sources/ZeyWinSDK/.../File.swift — Symbol`,
+`Tests/ZeyWinSDKTests/.../File.swift — TestName`, or
+`Package.swift — target/config`. Never use `::`, prose, glob patterns, absolute
+paths, or paths outside those allowlisted locations.
+
+When patch_ready is false, blockers must be non-empty. You may return either an
+empty target_swift_files_symbols array or known candidate targets in the required
+format. Candidate targets are informational only and are never eligible for patch
+generation, apply, a branch, or a PR. When patch_ready is true, targets must be
+non-empty concrete allowlisted targets and blockers must be empty.
 
 Return only one JSON object matching the requested schema exactly. Do not use
 Markdown fences. Do not add prose, explanations, headings, or any text before or
@@ -411,13 +418,20 @@ jq -n \
                                     source_unity_commits: {type: "array", items: {type: "string"}},
                                     unity_file_symbol: {type: "string"},
                                     behavior_to_port: {type: "string"},
-                                    target_swift_files_symbols: {type: "array", items: {type: "string"}},
-                                    patch_ready: {type: "boolean"},
+                                    target_swift_files_symbols: {
+                                        type: "array",
+                                        description: "Concrete Swift targets only. Canonical format is path — symbol. Legacy path::symbol is accepted solely for safe normalization to the canonical format.",
+                                        items: {
+                                            type: "string",
+                                            pattern: "^(Sources/ZeyWinSDK/[^\\n:]+\\.swift( — [^\\n:]+|::[^\\n:]+)?|Tests/ZeyWinSDKTests/[^\\n:]+\\.swift( — [^\\n:]+|::[^\\n:]+)?|Package\\.swift( — [^\\n:]+|::[^\\n:]+)?)$"
+                                        }
+                                    },
+                                    patch_ready: {type: "boolean", description: "true only when targets are concrete and blockers is empty; false items are informational and never actionable"},
                                     implementation_steps: {type: "array", items: {type: "string"}},
                                     tests_to_add_or_update: {type: "array", items: {type: "string"}},
                                     risk_level: {type: "string", enum: ["low", "medium", "high"]},
                                     dependencies: {type: "array", items: {type: "string"}},
-                                    blockers: {type: "array", items: {type: "string"}},
+                                    blockers: {type: "array", description: "Must be non-empty when patch_ready is false and empty when patch_ready is true.", items: {type: "string"}},
                                     acceptance_criteria: {type: "array", items: {type: "string"}},
                                     swift_port_needed: {type: "boolean"}
                                 }
@@ -461,6 +475,34 @@ extract_plan_text() {
     fi
 }
 
+normalize_target_symbols() {
+    local input_file="$1" normalized_file="$2"
+
+    # Accept only the explicitly supported legacy `path::symbol` spelling and
+    # canonicalize it before validation/output. Arbitrary delimiters and paths
+    # remain invalid under the strict validator below.
+    if ! jq -e . "$input_file" > /dev/null 2>&1; then
+        cp "$input_file" "$normalized_file"
+        return 0
+    fi
+    jq '
+        def normalize_target:
+            if type == "string" and test("^(Sources/ZeyWinSDK/[^\\n:]+\\.swift|Tests/ZeyWinSDKTests/[^\\n:]+\\.swift|Package\\.swift)::[^\\n:]+$")
+            then sub("::"; " — ")
+            else .
+            end;
+        if (.items | type == "array")
+        then .items |= map(
+            if (.target_swift_files_symbols | type == "array")
+            then .target_swift_files_symbols |= map(normalize_target)
+            else .
+            end
+        )
+        else .
+        end
+    ' "$input_file" > "$normalized_file"
+}
+
 validate_plan_text() {
     local text_file="$1"
     validation_error=""
@@ -470,6 +512,10 @@ validate_plan_text() {
         return 1
     fi
     if ! jq -e -s '
+        def allowed_target:
+            test("^Sources/ZeyWinSDK/[^\\n:]+\\.swift( — [^\\n:]+)?$")
+            or test("^Tests/ZeyWinSDKTests/[^\\n:]+\\.swift( — [^\\n:]+)?$")
+            or test("^Package\\.swift( — [^\\n:]+)?$");
         length == 1 and
         (.[0] |
             .schema == "zeywin.unity-swift-port-plan"
@@ -496,15 +542,11 @@ validate_plan_text() {
                     (.patch_ready == true
                         and (.target_swift_files_symbols | length > 0)
                         and (.blockers | length == 0)
-                        and all(.target_swift_files_symbols[];
-                            test("^Sources/ZeyWinSDK/[^\\n]+\\.swift( — [^\\n]+)?$")
-                            or test("^Tests/ZeyWinSDKTests/[^\\n]+\\.swift( — [^\\n]+)?$")
-                            or test("^Package\\.swift( — [^\\n]+)?$")
-                        )
+                        and all(.target_swift_files_symbols[]; allowed_target)
                     )
                     or (.patch_ready == false
-                        and (.target_swift_files_symbols | length == 0)
                         and (.blockers | length > 0)
+                        and all(.target_swift_files_symbols[]; allowed_target)
                     )
                 )
             )
@@ -523,6 +565,7 @@ validate_plan_text() {
 
 repair_retry_used=false
 first_plan_text_file="$tmp_dir/plan-attempt-1.txt"
+first_normalized_plan_file="$tmp_dir/plan-attempt-1-normalized.json"
 if ! request_plan "$payload_file" "$response_file"; then
     write_unavailable_outputs "The OpenAI Responses API request for the port plan failed."
     exit 5
@@ -533,9 +576,10 @@ if ! extract_plan_text "$response_file" "$first_plan_text_file"; then
     exit 6
 fi
 
-if validate_plan_text "$first_plan_text_file"; then
+normalize_target_symbols "$first_plan_text_file" "$first_normalized_plan_file"
+if validate_plan_text "$first_normalized_plan_file"; then
     record_attempt 1 "$response_status" "" "$response_file" "$first_plan_text_file"
-    final_plan_text_file="$first_plan_text_file"
+    final_plan_text_file="$first_normalized_plan_file"
 else
     record_attempt 1 "$response_status" "$validation_error" "$response_file" "$first_plan_text_file"
     repair_retry_used=true
@@ -543,6 +587,7 @@ else
     repair_payload_file="$tmp_dir/repair-request.json"
     repair_response_file="$tmp_dir/repair-response.json"
     repair_plan_text_file="$tmp_dir/plan-attempt-2.txt"
+    repair_normalized_plan_file="$tmp_dir/plan-attempt-2-normalized.json"
 
     cat > "$repair_prompt_file" <<EOF
 Return only one corrected JSON object matching the existing
@@ -550,6 +595,14 @@ Return only one corrected JSON object matching the existing
 fences or prose. Do not omit fields, relax schema requirements, invent missing
 facts, or create a no-op plan. Preserve exactly ${eligible_sections_count} eligible
 items from the semantic report.
+
+Use only canonical target strings: \`Sources/ZeyWinSDK/.../File.swift — Symbol\`,
+\`Tests/ZeyWinSDKTests/.../File.swift — TestName\`, or
+\`Package.swift — target/config\`. Do not use \`::\`, arbitrary paths, prose, or
+glob patterns in target_swift_files_symbols. patch_ready=true requires non-empty
+allowlisted targets and empty blockers. patch_ready=false requires non-empty
+blockers; its targets may be empty or known informational candidates, but it is
+never eligible for patch generation.
 
 The first response failed validation for this exact reason:
 
@@ -578,13 +631,14 @@ EOF
         write_unavailable_outputs "$extraction_error"
         exit 6
     fi
-    if ! validate_plan_text "$repair_plan_text_file"; then
+    normalize_target_symbols "$repair_plan_text_file" "$repair_normalized_plan_file"
+    if ! validate_plan_text "$repair_normalized_plan_file"; then
         record_attempt 2 "$response_status" "$validation_error" "$repair_response_file" "$repair_plan_text_file"
         write_unavailable_outputs "The repair retry did not conform to the required port-plan schema: ${validation_error}"
         exit 7
     fi
     record_attempt 2 "$response_status" "" "$repair_response_file" "$repair_plan_text_file"
-    final_plan_text_file="$repair_plan_text_file"
+    final_plan_text_file="$repair_normalized_plan_file"
 fi
 
 jq -s '.[0]' "$final_plan_text_file" > "$plan_json_file"
