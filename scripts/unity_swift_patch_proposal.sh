@@ -218,6 +218,10 @@ if [[ "$port_plan_status" == "no_op" ]]; then
 fi
 
 if ! jq -e '
+    def allowed_target:
+        test("^Sources/ZeyWinSDK/[^\\n:]+\\.swift( — [^\\n:]+)?$")
+        or test("^Tests/ZeyWinSDKTests/[^\\n:]+\\.swift( — [^\\n:]+)?$")
+        or test("^Package\\.swift( — [^\\n:]+)?$");
     (.items | length > 0)
     and all(.items[];
         (.id | type == "string" and length > 0)
@@ -231,14 +235,12 @@ if ! jq -e '
                 and (.target_swift_files_symbols | length > 0)
                 and (.blockers | length == 0)
                 and all(.target_swift_files_symbols[];
-                    test("^Sources/ZeyWinSDK/[^\\n]+\\.swift( — [^\\n]+)?$")
-                    or test("^Tests/ZeyWinSDKTests/[^\\n]+\\.swift( — [^\\n]+)?$")
-                    or test("^Package\\.swift( — [^\\n]+)?$")
+                    allowed_target
                 )
             )
             or (.patch_ready == false
-                and (.target_swift_files_symbols | length == 0)
                 and (.blockers | length > 0)
+                and all(.target_swift_files_symbols[]; allowed_target)
             )
         )
     )

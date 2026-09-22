@@ -8,6 +8,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 port_plan_script="$repo_root/scripts/unity_swift_port_plan.sh"
+patch_proposal_script="$repo_root/scripts/unity_swift_patch_proposal.sh"
+apply_script="$repo_root/scripts/unity_swift_apply_validated_patch.sh"
 baseline_file="$repo_root/.sync/unity-last-synced-commit"
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/unity-swift-port-plan-reliability.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -110,6 +112,24 @@ run_case() {
 }
 
 valid_text="$(<"$valid_plan")"
+candidate_plan="$tmp_dir/candidate-plan.json"
+actionable_plan="$tmp_dir/actionable-plan.json"
+actionable_with_blockers_plan="$tmp_dir/actionable-with-blockers-plan.json"
+actionable_without_targets_plan="$tmp_dir/actionable-without-targets-plan.json"
+forbidden_target_plan="$tmp_dir/forbidden-target-plan.json"
+legacy_separator_plan="$tmp_dir/legacy-separator-plan.json"
+jq '.items[0].target_swift_files_symbols = ["Sources/ZeyWinSDK/Network/Models/SDKInitRequest.swift — SDKInitRequest.sdkVersion"]' "$valid_plan" > "$candidate_plan"
+jq '.items[0].patch_ready = true | .items[0].blockers = [] | .items[0].target_swift_files_symbols = ["Sources/ZeyWinSDK/Network/Models/SDKInitRequest.swift — SDKInitRequest.sdkVersion"]' "$valid_plan" > "$actionable_plan"
+jq '.items[0].patch_ready = true | .items[0].target_swift_files_symbols = ["Sources/ZeyWinSDK/Network/Models/SDKInitRequest.swift — SDKInitRequest.sdkVersion"]' "$valid_plan" > "$actionable_with_blockers_plan"
+jq '.items[0].patch_ready = true | .items[0].blockers = []' "$valid_plan" > "$actionable_without_targets_plan"
+jq '.items[0].target_swift_files_symbols = ["README.md — forbidden"]' "$valid_plan" > "$forbidden_target_plan"
+jq '.items[0].target_swift_files_symbols = ["Sources/ZeyWinSDK/Network/Models/SDKInitRequest.swift::SDKInitRequest.sdkVersion"]' "$valid_plan" > "$legacy_separator_plan"
+candidate_text="$(<"$candidate_plan")"
+actionable_text="$(<"$actionable_plan")"
+actionable_with_blockers_text="$(<"$actionable_with_blockers_plan")"
+actionable_without_targets_text="$(<"$actionable_without_targets_plan")"
+forbidden_target_text="$(<"$forbidden_target_plan")"
+legacy_separator_text="$(<"$legacy_separator_plan")"
 invalid_schema='{"schema":"wrong","schema_version":"1.0","plan_status":"ready","items":[]}'
 malformed_text='{not-json'
 fenced_text="\`\`\`json
@@ -117,12 +137,39 @@ ${valid_text}
 \`\`\`"
 
 run_case valid_first_response "$valid_text" '' ready 1 false
+run_case blocked_empty_targets "$valid_text" '' ready 1 false
+run_case blocked_known_candidate_targets "$candidate_text" '' ready 1 false
+run_case patch_ready_valid_targets "$actionable_text" '' ready 1 false
+run_case patch_ready_with_blockers "$actionable_with_blockers_text" "$actionable_with_blockers_text" unavailable 2 true
+run_case patch_ready_without_targets "$actionable_without_targets_text" "$actionable_without_targets_text" unavailable 2 true
+run_case forbidden_candidate_target "$forbidden_target_text" "$forbidden_target_text" unavailable 2 true
+run_case legacy_double_colon_target "$legacy_separator_text" '' ready 1 false
 run_case malformed_then_valid "$malformed_text" "$valid_text" ready 2 true
 run_case invalid_schema_then_valid "$invalid_schema" "$valid_text" ready 2 true
 run_case null_json_then_valid 'null' "$valid_text" ready 2 true
 run_case malformed_then_malformed "$malformed_text" "$malformed_text" unavailable 2 true
 run_case invalid_schema_then_invalid_schema "$invalid_schema" "$invalid_schema" unavailable 2 true
 run_case fenced_json_then_valid "$fenced_text" "$valid_text" ready 2 true
+
+[[ "$(jq -r '.items[0].patch_ready' "$tmp_dir/patch_ready_valid_targets/plan.json")" == true ]] \
+    || fail 'valid patch-ready plan was not actionable'
+[[ "$(jq -r '.items[0].target_swift_files_symbols[0]' "$tmp_dir/legacy_double_colon_target/plan.json")" == 'Sources/ZeyWinSDK/Network/Models/SDKInitRequest.swift — SDKInitRequest.sdkVersion' ]] \
+    || fail 'legacy :: target was not safely normalized to canonical format'
+
+bash "$patch_proposal_script" \
+    --port-plan "$tmp_dir/blocked_known_candidate_targets/plan.json" \
+    --markdown-output "$tmp_dir/blocked-candidate-proposal.md" \
+    --json-output "$tmp_dir/blocked-candidate-proposal.json" \
+    --patch-output "$tmp_dir/blocked-candidate.patch"
+[[ "$(jq -r '.proposal_status' "$tmp_dir/blocked-candidate-proposal.json")" == no_op ]] \
+    || fail 'patch_ready=false candidate targets reached patch proposal generation'
+bash "$apply_script" --mode validate --repo-root "$tmp_dir" \
+    --port-plan "$tmp_dir/blocked_known_candidate_targets/plan.json" \
+    --proposal "$tmp_dir/blocked-candidate-proposal.json" \
+    --patch "$tmp_dir/blocked-candidate.patch" \
+    --report-output "$tmp_dir/blocked-candidate-apply.md" \
+    --applied-patch-output "$tmp_dir/blocked-candidate-applied.patch"
+pass 'blocked candidate targets remain informational for patch proposal and validated apply'
 
 baseline_after="$(shasum -a 256 "$baseline_file" | awk '{print $1}')"
 [[ "$baseline_before" == "$baseline_after" ]] || fail 'port-plan reliability fixtures changed the sync baseline'

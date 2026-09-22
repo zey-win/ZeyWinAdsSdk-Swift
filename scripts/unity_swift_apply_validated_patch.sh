@@ -130,6 +130,10 @@ fi
 if [[ "$(jq -r '.plan_status' "$port_plan")" == "no_op" ]]; then no_op; fi
 
 if ! jq -e '
+    def allowed_target:
+        test("^Sources/ZeyWinSDK/[^\\n:]+\\.swift( — [^\\n:]+)?$")
+        or test("^Tests/ZeyWinSDKTests/[^\\n:]+\\.swift( — [^\\n:]+)?$")
+        or test("^Package\\.swift( — [^\\n:]+)?$");
     (.items | length > 0)
     and all(.items[];
         (.id | type == "string" and length > 0)
@@ -137,8 +141,13 @@ if ! jq -e '
         and .swift_port_needed == true and (.patch_ready | type == "boolean")
         and (.target_swift_files_symbols | type == "array" and all(.[]; type == "string" and length > 0))
         and (.blockers | type == "array" and all(.[]; type == "string" and length > 0))
-        and ((.patch_ready == true and (.target_swift_files_symbols | length > 0) and (.blockers | length == 0))
-             or (.patch_ready == false and (.target_swift_files_symbols | length == 0) and (.blockers | length > 0)))
+        and ((.patch_ready == true
+                and (.target_swift_files_symbols | length > 0)
+                and (.blockers | length == 0)
+                and all(.target_swift_files_symbols[]; allowed_target))
+             or (.patch_ready == false
+                and (.blockers | length > 0)
+                and all(.target_swift_files_symbols[]; allowed_target)))
     )
     and (([.items[].id] | length) == ([.items[].id] | unique | length))
 ' "$port_plan" > /dev/null; then
